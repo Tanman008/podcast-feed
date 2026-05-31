@@ -1,0 +1,302 @@
+// prisma/schema.prisma
+// Podcast Intelligence Platform
+// Embedding dimensions: 1536 (text-embedding-3-small)
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [uuid_ossp(map: "uuid-ossp", schema: "extensions"), vector(schema: "extensions")]
+}
+
+// ─────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────
+
+enum SourceType {
+  youtube
+  spotify
+  apple_podcast
+  earnings_call
+  x_space
+  interview
+  conference
+}
+
+enum EntityType {
+  ticker
+  company
+  person
+  investor
+  executive
+  topic
+  product
+  sector
+  fund
+}
+
+enum MentionType {
+  direct
+  implied
+  contextual
+}
+
+enum TranscriptStatus {
+  pending
+  processing
+  completed
+  failed
+}
+
+enum JobStatus {
+  queued
+  running
+  completed
+  failed
+}
+
+// ─────────────────────────────────────────────
+// SOURCE
+// Represents a podcast, channel, or provider.
+// Examples: All-In Podcast, Acquired, NVIDIA IR
+// ─────────────────────────────────────────────
+
+model Source {
+  id          String     @id @default(uuid())
+  name        String
+  slug        String     @unique
+  sourceType  SourceType
+  platform    String
+  url         String
+  description String?
+  imageUrl    String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  episodes      Episode[]
+  ingestionJobs IngestionJob[]
+
+  @@index([sourceType])
+  @@index([platform])
+  @@map("Source")
+}
+
+// ─────────────────────────────────────────────
+// EPISODE
+// One ingestible media unit.
+// Examples: podcast episode, earnings call, talk
+// ─────────────────────────────────────────────
+
+model Episode {
+  id               String           @id @default(uuid())
+  sourceId         String
+  externalId       String           // YouTube video ID, etc.
+  title            String
+  description      String?
+  publishedAt      DateTime?
+  durationSeconds  Int?
+  thumbnailUrl     String?
+  transcriptStatus TranscriptStatus @default(pending)
+  rawTranscript    String?          // Full original transcript text
+  errorMessage     String?          // Populated on failure
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  source  Source           @relation(fields: [sourceId], references: [id])
+  chunks  TranscriptChunk[]
+
+  @@unique([sourceId, externalId])
+  @@index([sourceId])
+  @@index([publishedAt])
+  @@index([transcriptStatus])
+  @@map("Episode")
+}
+
+// ─────────────────────────────────────────────
+// SPEAKER
+// An identified speaker across episodes.
+// ─────────────────────────────────────────────
+
+model Speaker {
+  id              String   @id @default(uuid())
+  name            String
+  normalizedName  String   @unique
+  bio             String?
+  imageUrl        String?
+  metadataJson    Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  chunks TranscriptChunk[]
+
+  @@index([normalizedName])
+  @@map("Speaker")
+}
+
+// ─────────────────────────────────────────────
+// TRANSCRIPTCHUNK
+// The primary object in the system.
+// Every retrieval, feed, ranking, and scoring
+// operation revolves around this table.
+// ─────────────────────────────────────────────
+
+model TranscriptChunk {
+  id               String                       @id @default(uuid())
+  episodeId        String
+  speakerId        String?
+  chunkIndex       Int                          // Sequential order within episode
+  text             String                       // Original chunk text
+  cleanedText      String                       // Whitespace-normalized, lowercased
+  summary          String?                      // Optional LLM-generated summary
+  startTimeSeconds Float
+  endTimeSeconds   Float
+  tokenCount       Int
+  embedding        Unsupported("vector(1536)")? // text-embedding-3-small
+  importanceScore  Float?
+  noveltyScore     Float?
+  convictionScore  Float?
+  relevanceScore   Float?
+  sentimentScore   Float?
+  metadataJson     Json?
+  createdAt        DateTime                     @default(now())
+  updatedAt        DateTime                     @updatedAt
+
+  episode  Episode       @relation(fields: [episodeId], references: [id])
+  speaker  Speaker?      @relation(fields: [speakerId], references: [id])
+  entities ChunkEntity[]
+
+  @@index([episodeId])
+  @@index([speakerId])
+  @@index([chunkIndex])
+  @@index([importanceScore])
+  @@index([noveltyScore])
+  @@index([convictionScore])
+  @@index([createdAt])
+  @@index([embedding], map: "transcript_chunk_embedding_idx")
+  @@map("TranscriptChunk")
+}
+
+// ─────────────────────────────────────────────
+// ENTITY
+// A structured financial concept.
+// Examples: NVDA, Jensen Huang, "AI infrastructure"
+// ─────────────────────────────────────────────
+
+model Entity {
+  id              String     @id @default(uuid())
+  entityType      EntityType
+  name            String
+  normalizedName  String
+  ticker          String?
+  description     String?
+  metadataJson    Json?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  chunks    ChunkEntity[]
+  feedItems FeedEntity[]
+
+  @@unique([normalizedName, entityType])
+  @@index([entityType])
+  @@index([ticker])
+  @@map("Entity")
+}
+
+// ─────────────────────────────────────────────
+// CHUNKENTITY
+// Join table: TranscriptChunk <-> Entity
+// Powers ticker feeds, filtering, graph traversal
+// ─────────────────────────────────────────────
+
+model ChunkEntity {
+  id          String      @id @default(uuid())
+  chunkId     String
+  entityId    String
+  confidence  Float       // Extraction confidence 0.0–1.0
+  mentionType MentionType @default(direct)
+  createdAt   DateTime    @default(now())
+
+  chunk  TranscriptChunk @relation(fields: [chunkId], references: [id])
+  entity Entity          @relation(fields: [entityId], references: [id])
+
+  @@unique([chunkId, entityId])
+  @@index([chunkId])
+  @@index([entityId])
+  @@index([confidence])
+  @@map("ChunkEntity")
+}
+
+// ─────────────────────────────────────────────
+// INGESTIONJOB
+// Tracks worker pipeline state.
+// API route enqueues and returns jobId immediately.
+// Worker polls this table and processes jobs.
+// ─────────────────────────────────────────────
+
+model IngestionJob {
+  id           String    @id @default(uuid())
+  videoUrl     String
+  sourceId     String
+  episodeId    String?   // Populated after Episode is created
+  status       JobStatus @default(queued)
+  progress     Int       @default(0)  // 0–100 for client polling
+  chunksTotal  Int?      // Set after chunking
+  chunksDone   Int?      // Incremented per chunk
+  errorMessage String?   // Populated on failure
+  attempts     Int       @default(0)
+  createdAt    DateTime  @default(now())
+  startedAt    DateTime?
+  completedAt  DateTime?
+
+  source Source @relation(fields: [sourceId], references: [id])
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("IngestionJob")
+}
+
+// ─────────────────────────────────────────────
+// FEED
+// A user-defined intelligence feed.
+// Phase 1: userId is optional (no auth yet)
+// ─────────────────────────────────────────────
+
+model Feed {
+  id          String   @id @default(uuid())
+  userId      String?  // Nullable until auth is added
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  entities FeedEntity[]
+
+  @@index([userId])
+  @@map("Feed")
+}
+
+// ─────────────────────────────────────────────
+// FEEDENTITY
+// Join table: Feed <-> Entity
+// Maps which entities a feed tracks
+// ─────────────────────────────────────────────
+
+model FeedEntity {
+  id        String   @id @default(uuid())
+  feedId    String
+  entityId  String
+  weight    Float    @default(1.0) // Relevance weighting for future ranking
+  createdAt DateTime @default(now())
+
+  feed   Feed   @relation(fields: [feedId], references: [id])
+  entity Entity @relation(fields: [entityId], references: [id])
+
+  @@unique([feedId, entityId])
+  @@index([feedId])
+  @@index([entityId])
+  @@map("FeedEntity")
+}
