@@ -6,7 +6,7 @@ import OpenAI from 'openai';
 import { withRetry } from '@/lib/utils/retry';
 import { lookupTicker } from '@/lib/tickers/lookup';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY ?? 'missing' });
 
 export interface SearchExpansion {
   inputType: 'company' | 'person' | 'theme' | 'product' | 'event';

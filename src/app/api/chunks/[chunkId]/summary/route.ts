@@ -6,8 +6,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import OpenAI from 'openai';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
 export async function POST(
   _req: NextRequest,
   { params }: { params: Promise<{ chunkId: string }> }
@@ -66,6 +64,7 @@ Write a 4-5 sentence summary covering:
 
 Be direct and specific — this is for an investor who wants to understand the signal quickly.`;
 
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const response = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [{ role: 'user', content: prompt }],

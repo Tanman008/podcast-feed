@@ -5,7 +5,7 @@
 import OpenAI from 'openai';
 import { db } from '@/lib/db';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY ?? 'missing' });
 
 const TICKER_ALIASES: Record<string, string> = {
   'GOOG': 'GOOGL',

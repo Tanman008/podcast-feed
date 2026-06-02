@@ -6,8 +6,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import OpenAI from 'openai';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
 export async function POST(
   _req: NextRequest,
   { params }: { params: Promise<{ matchId: string }> }
@@ -62,6 +60,7 @@ Speaker: ${speaker}
 
 Return only the gloss sentence, or the word null.`;
 
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const response = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [{ role: 'user', content: prompt }],

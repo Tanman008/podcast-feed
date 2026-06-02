@@ -15,7 +15,7 @@ import { withRetry } from '@/lib/utils/retry';
 import { TOPIC_EXPANSIONS } from './topicExpansions';
 import type { ExtractedClaim } from '@/lib/ingestion/entityExtractor';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY ?? 'missing' });
 
 const VECTOR_CANDIDATES = 200;
 const MAX_CLAIMS_PER_EPISODE = 20;
