@@ -7,7 +7,8 @@ import crypto from 'crypto';
 import { db } from '@/lib/db';
 import { OPTIMIZATION_CONFIG } from '@/lib/config/optimization';
 
-// Phase 1: Check if episode with same videoId already exists
+// Phase 1: Check if a successfully completed episode already exists for this videoId.
+// Returns false for failed/processing episodes so retries are not blocked.
 export async function checkEpisodeExists(
   videoId: string,
   sourceId: string
@@ -19,9 +20,10 @@ export async function checkEpisodeExists(
         externalId: videoId,
       },
     },
+    select: { transcriptStatus: true },
   });
 
-  return !!episode;
+  return episode?.transcriptStatus === 'completed';
 }
 
 // Phase 2 hook: Compute transcript hash for deduplication

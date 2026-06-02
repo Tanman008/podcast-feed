@@ -24,3 +24,49 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Dual-handle histogram range slider — used in the feed sidebar */
+.range-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  position: absolute;
+  width: 100%;
+  height: 0;
+  pointer-events: none;
+  background: transparent;
+  outline: none;
+}
+.range-slider-thumb::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #C8900A;
+  cursor: pointer;
+  pointer-events: all;
+  border: 2px solid #0a0a0a;
+  box-shadow: 0 0 0 1px #C8900A;
+  margin-top: -4px;
+}
+.range-slider-thumb::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #C8900A;
+  cursor: pointer;
+  pointer-events: all;
+  border: 2px solid #0a0a0a;
+  box-shadow: 0 0 0 1px #C8900A;
+}
+.range-slider-track {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #1a1a1a;
+  border-radius: 1px;
+  pointer-events: none;
+}

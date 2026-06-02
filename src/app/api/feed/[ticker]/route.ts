@@ -14,7 +14,7 @@ export async function GET(
     const { searchParams } = request.nextUrl;
 
     // Parse query parameters
-    const sort = (searchParams.get('sort') || 'recency') as 'recency' | 'novelty' | 'conviction';
+    const sort = (searchParams.get('sort') || 'relevance') as 'recency' | 'novelty' | 'conviction' | 'relevance';
     const limit = Math.min(parseInt(searchParams.get('limit') || '20'), 100);
     const offset = Math.max(parseInt(searchParams.get('offset') || '0'), 0);
     const speakerId = searchParams.get('speakerId') || undefined;
@@ -28,7 +28,7 @@ export async function GET(
     }
 
     // Validate sort parameter
-    if (!['recency', 'novelty', 'conviction'].includes(sort)) {
+    if (!['recency', 'novelty', 'conviction', 'relevance'].includes(sort)) {
       return NextResponse.json(
         { error: 'Invalid sort parameter' },
         { status: 400 }
@@ -65,16 +65,24 @@ export async function GET(
       chunks: chunks.map(chunk => ({
         id: chunk.id,
         text: chunk.text,
+        keyQuote: chunk.keyQuote ?? null,
+        keyPhrase: chunk.keyPhrase ?? null,
+        speakerLabel: (chunk as any).speakerLabel ?? null,
+        speakerName: (chunk as any).speakerName ?? null,
         startTimeSeconds: chunk.startTimeSeconds,
         endTimeSeconds: chunk.endTimeSeconds,
         noveltyScore: chunk.noveltyScore,
         convictionScore: chunk.convictionScore,
-        speaker: chunk.speaker ? {
-          id: chunk.speaker.id,
-          name: chunk.speaker.name,
-        } : null,
+        entities: chunk.entities?.map((ce: any) => ({
+          id: ce.entity.id,
+          name: ce.entity.name,
+          ticker: ce.entity.ticker,
+          entityType: ce.entity.entityType,
+          confidence: ce.confidence,
+        })) ?? [],
         episode: chunk.episode ? {
           id: chunk.episode.id,
+          externalId: chunk.episode.externalId,
           title: chunk.episode.title,
           publishedAt: chunk.episode.publishedAt,
           source: chunk.episode.source ? {

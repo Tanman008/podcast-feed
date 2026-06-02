@@ -1,0 +1,2 @@
+ALTER TABLE "TranscriptChunk" ADD COLUMN IF NOT EXISTS "chunkType" TEXT;
+ALTER TABLE "InterestMatch" ADD COLUMN IF NOT EXISTS "quality" TEXT;

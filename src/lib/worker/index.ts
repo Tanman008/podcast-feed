@@ -5,44 +5,49 @@
 
 import { claimNextJob } from './claim';
 import { processJob } from './processJob';
+import { pollAllChannels } from './rssMonitor';
 
-const POLL_INTERVAL_MS = 5000; // 5 seconds
+const POLL_INTERVAL_MS    = 5_000;        // job poll: every 5s
+const RSS_INTERVAL_MS     = 30 * 60_000; // RSS poll: every 30 min
+const MAX_CONCURRENT_JOBS = 2;
 
-let isRunning = true;
-let isProcessing = false;
+let isRunning  = true;
+let activeJobs = 0;
 
 async function pollAndProcess(): Promise<void> {
-  if (isProcessing) {
-    return; // Already processing a job
-  }
+  if (activeJobs >= MAX_CONCURRENT_JOBS) return;
 
+  let job;
   try {
-    isProcessing = true;
-
-    const job = await claimNextJob();
-
-    if (!job) {
-      // No jobs available, will retry on next poll
-      return;
-    }
-
-    console.log(`[Worker] Processing job ${job.id}`);
-    await processJob(job);
+    job = await claimNextJob();
   } catch (error) {
-    console.error('[Worker] Error during poll/process:', error);
-  } finally {
-    isProcessing = false;
+    console.error('[Worker] Error claiming job:', error);
+    return;
   }
+
+  if (!job) return;
+
+  activeJobs++;
+  console.log(`[Worker] Processing job ${job.id} (${activeJobs}/${MAX_CONCURRENT_JOBS} active)`);
+
+  processJob(job)
+    .catch(error => console.error(`[Worker] Job ${job.id} error:`, error))
+    .finally(() => { activeJobs--; });
 }
 
 async function startWorker(): Promise<void> {
   console.log('[Worker] Starting ingestion worker...');
-  console.log(`[Worker] Polling every ${POLL_INTERVAL_MS}ms for jobs`);
+  console.log(`[Worker] Job poll: every ${POLL_INTERVAL_MS / 1000}s | RSS poll: every ${RSS_INTERVAL_MS / 60000}min | Max concurrent: ${MAX_CONCURRENT_JOBS}`);
 
-  // Poll loop
+  // RSS monitor — run once on start, then on interval
+  pollAllChannels().catch(e => console.error('[RSS] Initial poll failed:', e));
+  setInterval(() => {
+    pollAllChannels().catch(e => console.error('[RSS] Poll failed:', e));
+  }, RSS_INTERVAL_MS);
+
+  // Job poll loop
   while (isRunning) {
     await pollAndProcess();
-
     if (isRunning) {
       await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
     }
@@ -57,9 +62,9 @@ function setupShutdown(): void {
     console.log('[Worker] SIGTERM received, shutting down gracefully...');
     isRunning = false;
 
-    // Wait for current job to complete (max 5 minutes)
+    // Wait for active jobs to complete (max 5 minutes)
     let waited = 0;
-    while (isProcessing && waited < 300000) {
+    while (activeJobs > 0 && waited < 300000) {
       await new Promise(resolve => setTimeout(resolve, 1000));
       waited += 1000;
     }
@@ -72,7 +77,7 @@ function setupShutdown(): void {
     isRunning = false;
 
     let waited = 0;
-    while (isProcessing && waited < 300000) {
+    while (activeJobs > 0 && waited < 300000) {
       await new Promise(resolve => setTimeout(resolve, 1000));
       waited += 1000;
     }

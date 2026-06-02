@@ -1,0 +1,19 @@
+{
+  "name": "Podcast Intelligence",
+  "short_name": "PodIntel",
+  "description": "Investor-focused transcript intelligence feed",
+  "start_url": "/interests",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

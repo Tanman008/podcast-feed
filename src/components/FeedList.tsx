@@ -6,15 +6,27 @@
 import { useState, useEffect } from 'react';
 import { FeedCard } from './FeedCard';
 
+interface Entity {
+  id: string;
+  name: string;
+  ticker: string | null;
+  entityType: string;
+  confidence: number;
+}
+
 interface Chunk {
   id: string;
   text: string;
+  keyQuote: string | null;
+  keyPhrase: string | null;
+  speakerLabel: string | null;
+  speakerName: string | null;
   startTimeSeconds: number;
   endTimeSeconds: number;
   noveltyScore: number | null;
   convictionScore: number | null;
-  speaker?: { id: string; name: string } | null;
-  episode?: { id: string; title: string; publishedAt: string | null; source?: { name: string; platform: string } | null } | null;
+  entities: Entity[];
+  episode?: { id: string; externalId: string; title: string; publishedAt: string | null; source?: { name: string; platform: string } | null } | null;
 }
 
 interface Speaker {

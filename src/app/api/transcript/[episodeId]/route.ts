@@ -69,10 +69,9 @@ export async function GET(
         tokenCount: chunk.tokenCount,
         noveltyScore: chunk.noveltyScore,
         convictionScore: chunk.convictionScore,
-        speaker: chunk.speaker ? {
-          id: chunk.speaker.id,
-          name: chunk.speaker.name,
-        } : null,
+        speakerName: (chunk as any).speakerName ?? null,
+        speakerLabel: (chunk as any).speakerLabel ?? null,
+        speaker: chunk.speaker ? { id: chunk.speaker.id, name: chunk.speaker.name } : null,
         entities: chunk.entities.map(ce => ({
           id: ce.entity.id,
           name: ce.entity.name,

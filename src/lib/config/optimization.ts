@@ -11,11 +11,11 @@ export const OPTIMIZATION_CONFIG = {
   // Phase 2: true (skip sponsor reads, ads, etc. via skipPattern)
   SMART_CHUNKING_ENABLED: process.env.SMART_CHUNKING_ENABLED === 'true',
 
-  // Skip pattern for sponsor/filler segments (Phase 2)
-  // Examples: /sponsor|ad break|subscribe|like|comment/i
+  // Skip pattern for sponsor/filler utterances.
+  // Override via CHUNK_SKIP_PATTERN env var. Default filters common ad-read phrases.
   CHUNK_SKIP_PATTERN: process.env.CHUNK_SKIP_PATTERN
     ? new RegExp(process.env.CHUNK_SKIP_PATTERN, 'i')
-    : undefined,
+    : /\bbrought to you by\b|\buse (?:code|promo)\b|\bpromo code\b|\bad break\b|\bsponsor(?:ed)? (?:by|break)\b/i,
 
   // Phase 1: 'immediate' (novelty scored in Pass 2 during job)
   // Phase 2: 'deferred' (novelty scoring queued for batch processing)
@@ -33,12 +33,11 @@ export const OPTIMIZATION_CONFIG = {
   // CLAUDE.md: "Never fully serial, never fully parallel" → 8 is optimal
   LLM_CONCURRENCY: parseInt(process.env.LLM_CONCURRENCY || '8', 10),
 
-  // Chunking parameters (from implementation-spec.md Section 4)
   CHUNKING: {
-    TARGET_TOKENS: 400,
-    MAX_TOKENS: 600,
-    OVERLAP_TOKENS: 80,
-    MIN_TOKENS: 50, // Discard chunks smaller than this
+    TARGET_WORDS: 250,
+    MAX_WORDS: 300,
+    OVERLAP_WORDS: 30,
+    MIN_WORDS: 20,
   },
 
   // Novelty scoring parameters

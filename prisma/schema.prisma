@@ -72,10 +72,15 @@ model Source {
   sourceType  SourceType
   platform    String
   url         String
-  description String?
-  imageUrl    String?
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+  description        String?
+  imageUrl           String?
+  minDurationSeconds Int?     // null = no minimum filter
+  maxDurationSeconds Int?     // null = no maximum filter
+  checkIntervalHours Int      @default(1)
+  following          Boolean  @default(true)
+  lastCheckedAt      DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   episodes      Episode[]
   ingestionJobs IngestionJob[]
@@ -106,8 +111,9 @@ model Episode {
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 
-  source  Source           @relation(fields: [sourceId], references: [id])
-  chunks  TranscriptChunk[]
+  source          Source           @relation(fields: [sourceId], references: [id])
+  chunks          TranscriptChunk[]
+  interestMatches InterestMatch[]
 
   @@unique([sourceId, externalId])
   @@index([sourceId])
@@ -151,23 +157,33 @@ model TranscriptChunk {
   chunkIndex       Int                          // Sequential order within episode
   text             String                       // Original chunk text
   cleanedText      String                       // Whitespace-normalized, lowercased
+  keyQuote         String?                      // Most signal-rich sentence, extracted by LLM
+  keyPhrase        String?                      // Most critical 2–5 word phrase within keyQuote
+  speakerLabel     String?                      // Raw diarization label from Deepgram ("0", "1", …)
+  speakerName      String?                      // Resolved human name from LLM identification
   summary          String?                      // Optional LLM-generated summary
   startTimeSeconds Float
   endTimeSeconds   Float
   tokenCount       Int
   embedding        Unsupported("vector(1536)")? // text-embedding-3-small
-  importanceScore  Float?
-  noveltyScore     Float?
-  convictionScore  Float?
-  relevanceScore   Float?
-  sentimentScore   Float?
-  metadataJson     Json?
+  importanceScore   Float?
+  noveltyScore      Float?
+  convictionScore   Float?
+  relevanceScore    Float?
+  sentimentScore    Float?
+  chunkType         String?  // ARGUMENT | POSITION | DATA | NARRATION | OPINION | CHITCHAT
+  claimUnit         String?  // Cached verbatim claim span from extractClaimUnit
+  claimCompleteness Float?   // 0.0 = tried/no claim, null = not yet extracted, >0 = completeness score
+  claimAllParts     Boolean? // true if claim contains setup + claim + implication
+  metadataJson      Json?
   createdAt        DateTime                     @default(now())
   updatedAt        DateTime                     @updatedAt
 
-  episode  Episode       @relation(fields: [episodeId], references: [id])
-  speaker  Speaker?      @relation(fields: [speakerId], references: [id])
-  entities ChunkEntity[]
+  episode         Episode         @relation(fields: [episodeId], references: [id])
+  speaker         Speaker?        @relation(fields: [speakerId], references: [id])
+  entities        ChunkEntity[]
+  claims          Claim[]
+  interestMatches InterestMatch[]
 
   @@index([episodeId])
   @@index([speakerId])
@@ -178,6 +194,37 @@ model TranscriptChunk {
   @@index([createdAt])
   @@index([embedding], map: "transcript_chunk_embedding_idx")
   @@map("TranscriptChunk")
+}
+
+// ─────────────────────────────────────────────
+// CLAIM
+// A single extractable investor claim from a chunk.
+// One chunk may produce 0–7 claims.
+// Claims are the unit of output for the feed.
+// ─────────────────────────────────────────────
+
+model Claim {
+  id                 String   @id @default(uuid())
+  chunkId            String
+  highlight          String
+  startSentenceIndex Int      @default(0)
+  endSentenceIndex   Int      @default(0)
+  primarySubject     String?
+  mentionedEntities  String[]
+  claimType          String   // unit_economics|transaction|growth|thesis|position|competitive|valuation|guidance
+  specificity        Float
+  completeness       Float
+  gloss              String?
+  numbers            String[] // specific quantified facts from the highlight
+  createdAt          DateTime @default(now())
+
+  chunk           TranscriptChunk @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+  interestMatches InterestMatch[]
+
+  @@index([chunkId])
+  @@index([claimType])
+  @@index([completeness])
+  @@map("Claim")
 }
 
 // ─────────────────────────────────────────────
@@ -257,6 +304,55 @@ model IngestionJob {
   @@index([status])
   @@index([createdAt])
   @@map("IngestionJob")
+}
+
+// ─────────────────────────────────────────────
+// USERINTEREST
+// An investor's monitoring term.
+// e.g. "Nvidia", "Elon Musk AND government"
+// Phase 1: userId is a free-text label (no auth)
+// ─────────────────────────────────────────────
+
+model UserInterest {
+  id        String   @id @default(uuid())
+  userId    String   @default("default")
+  term      String                          // Raw query string as entered
+  createdAt DateTime @default(now())
+
+  matches InterestMatch[]
+
+  @@index([userId])
+  @@map("UserInterest")
+}
+
+// ─────────────────────────────────────────────
+// INTERESTMATCH
+// Pre-computed top hits for one interest × episode.
+// Up to 10 rows per (interestId, episodeId); capped in application code.
+// ─────────────────────────────────────────────
+
+model InterestMatch {
+  id           String   @id @default(uuid())
+  interestId   String
+  episodeId    String
+  chunkId      String
+  claimId      String
+  score        Float
+  entityWeight Float    @default(1.0)
+  quality      String?  // 'high' | 'low'
+  createdAt    DateTime @default(now())
+
+  interest UserInterest    @relation(fields: [interestId], references: [id], onDelete: Cascade)
+  episode  Episode         @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  chunk    TranscriptChunk @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+  claim    Claim           @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  @@unique([interestId, claimId])
+  @@index([interestId])
+  @@index([episodeId])
+  @@index([score])
+  @@index([createdAt])
+  @@map("InterestMatch")
 }
 
 // ─────────────────────────────────────────────

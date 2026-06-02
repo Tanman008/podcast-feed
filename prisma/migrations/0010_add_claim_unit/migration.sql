@@ -1,0 +1,4 @@
+ALTER TABLE "TranscriptChunk" ADD COLUMN IF NOT EXISTS "claimUnit" TEXT;
+ALTER TABLE "TranscriptChunk" ADD COLUMN IF NOT EXISTS "claimCompleteness" DOUBLE PRECISION;
+ALTER TABLE "TranscriptChunk" ADD COLUMN IF NOT EXISTS "claimAllParts" BOOLEAN;
+c

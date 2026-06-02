@@ -1,52 +1,38 @@
-// src/components/IngestionForm.tsx
-// YouTube video ingestion form with progress polling
-
 'use client';
 
 import { useState, useEffect } from 'react';
 
-interface Source {
-  id: string;
-  name: string;
-}
-
-interface IngestionFormProps {
-  sources: Source[];
-}
-
-export function IngestionForm({ sources }: IngestionFormProps) {
+export function IngestionForm() {
   const [videoUrl, setVideoUrl] = useState('');
-  const [sourceId, setSourceId] = useState('');
   const [loading, setLoading] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState<'queued' | 'running' | 'completed' | 'failed' | null>(null);
+  const [channelName, setChannelName] = useState<string | null>(null);
+  const [videoTitle, setVideoTitle] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Poll job status while ingesting
   useEffect(() => {
     if (!jobId || !['queued', 'running'].includes(status || '')) return;
 
     const interval = setInterval(async () => {
       try {
-        const response = await fetch(`/api/ingest/jobs/${jobId}`);
-        if (!response.ok) throw new Error('Failed to fetch job status');
-
-        const data = await response.json();
+        const res = await fetch(`/api/ingest/jobs/${jobId}`);
+        if (!res.ok) throw new Error('Failed to fetch job status');
+        const data = await res.json();
         setProgress(data.progress);
         setStatus(data.status);
-
-        if (data.status === 'failed') {
-          setError(data.errorMessage);
-        }
-
+        if (data.status === 'failed') setError(data.errorMessage);
         if (data.status === 'completed') {
           setTimeout(() => {
             setJobId(null);
             setProgress(0);
             setVideoUrl('');
+            setChannelName(null);
+            setVideoTitle(null);
             setError(null);
-          }, 1000);
+            setStatus(null);
+          }, 2000);
         }
       } catch (err: any) {
         setError(err.message);
@@ -62,21 +48,20 @@ export function IngestionForm({ sources }: IngestionFormProps) {
     setLoading(true);
 
     try {
-      const response = await fetch('/api/ingest/youtube', {
+      const res = await fetch('/api/ingest/youtube', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ videoUrl, sourceId }),
+        body: JSON.stringify({ videoUrl }),
       });
 
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to enqueue job');
-      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to enqueue job');
 
-      const data = await response.json();
       setJobId(data.jobId);
       setStatus('queued');
       setProgress(0);
+      setChannelName(data.channelName ?? null);
+      setVideoTitle(data.videoTitle ?? null);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -86,71 +71,56 @@ export function IngestionForm({ sources }: IngestionFormProps) {
 
   if (jobId) {
     return (
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-        <h3 className="font-semibold text-blue-900 mb-2">Ingestion in Progress</h3>
-        <div className="space-y-2">
-          <div>
-            <div className="flex justify-between text-sm text-blue-700 mb-1">
-              <span>{status === 'running' ? 'Processing...' : 'Queued...'}</span>
-              <span>{progress}%</span>
-            </div>
-            <div className="bg-blue-200 rounded-full h-2">
-              <div
-                className="bg-blue-600 h-2 rounded-full transition-all"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
+      <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-5 space-y-3">
+        <h3 className="text-xs font-semibold text-[#888] uppercase tracking-widest">Ingesting…</h3>
+        {videoTitle && <p className="text-xs text-[#ccc] truncate">{videoTitle}</p>}
+        {channelName && <p className="text-[11px] text-[#555]">{channelName}</p>}
+
+        <div>
+          <div className="flex justify-between text-[10px] text-[#555] mb-1">
+            <span>{status === 'running' ? 'Processing' : 'Queued'}</span>
+            <span>{progress}%</span>
           </div>
-          {status === 'completed' && (
-            <p className="text-green-700 text-sm">✓ Complete!</p>
-          )}
-          {error && <p className="text-red-700 text-sm">Error: {error}</p>}
+          <div className="bg-[#1a1a1a] rounded-full h-1">
+            <div
+              className="bg-[#C8900A] h-1 rounded-full transition-all duration-500"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
         </div>
+
+        {status === 'completed' && (
+          <p className="text-[11px] text-emerald-400 font-medium">✓ Done</p>
+        )}
+        {error && <p className="text-[11px] text-red-400">{error}</p>}
       </div>
     );
   }
 
   return (
-    <form onSubmit={handleSubmit} className="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
-      <h3 className="font-semibold text-gray-900">Ingest a Video</h3>
+    <form onSubmit={handleSubmit} className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-5 space-y-3">
+      <h3 className="text-xs font-semibold text-[#888] uppercase tracking-widest">Ingest a video</h3>
+      <p className="text-[11px] text-[#444]">
+        Paste any public YouTube URL. Source is detected automatically from the channel.
+      </p>
 
-      <div>
-        <label className="block text-sm text-gray-700 mb-1">YouTube URL</label>
-        <input
-          type="url"
-          placeholder="https://www.youtube.com/watch?v=..."
-          value={videoUrl}
-          onChange={e => setVideoUrl(e.target.value)}
-          required
-          className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-      </div>
+      <input
+        type="url"
+        placeholder="https://www.youtube.com/watch?v=..."
+        value={videoUrl}
+        onChange={e => setVideoUrl(e.target.value)}
+        required
+        className="w-full px-3 py-2 bg-[#080808] border border-[#222] rounded-lg text-sm text-white placeholder-[#333] focus:outline-none focus:ring-1 focus:ring-[#C8900A]/40"
+      />
 
-      <div>
-        <label className="block text-sm text-gray-700 mb-1">Source</label>
-        <select
-          value={sourceId}
-          onChange={e => setSourceId(e.target.value)}
-          required
-          className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="">Select a source...</option>
-          {sources.map(s => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {error && <p className="text-red-600 text-sm">{error}</p>}
+      {error && <p className="text-[11px] text-red-400">{error}</p>}
 
       <button
         type="submit"
         disabled={loading}
-        className="w-full px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors text-sm font-medium"
+        className="w-full px-4 py-2 bg-[#C8900A] text-black rounded-lg text-xs font-bold hover:bg-[#a97208] disabled:opacity-50 transition-colors uppercase tracking-widest"
       >
-        {loading ? 'Submitting...' : 'Ingest'}
+        {loading ? 'Checking…' : 'Ingest'}
       </button>
     </form>
   );

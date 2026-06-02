@@ -1,0 +1,4 @@
+ALTER TABLE "Source" ADD COLUMN "minDurationSeconds" INTEGER;
+ALTER TABLE "Source" ADD COLUMN "maxDurationSeconds" INTEGER;
+ALTER TABLE "Source" ADD COLUMN "checkIntervalHours" INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE "Source" ADD COLUMN "lastCheckedAt" TIMESTAMP(3);
