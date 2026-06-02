@@ -23,9 +23,13 @@ const MATERIALITY_PATTERNS: { re: RegExp; pts: number }[] = [
   { re: /\b(growth rate|CAGR|YoY|QoQ|grew|growing|grown)\b/i,                          pts: 0.14 },
   { re: /\b(TAM|market size|market share|addressable|penetration)\b/i,                  pts: 0.14 },
   { re: /\b(CapEx|capital expenditure|acquisition|buyback)\b/i,                         pts: 0.12 },
-  { re: /\b(valuation|multiple|P\/E|EV|price.?target)\b/i,                              pts: 0.14 },
+  { re: /\b(valuation|multiple|P\/E|EV|price.?target|worth)\b/i,                        pts: 0.14 },
   { re: /\b(unit economics?|inference cost|token cost|cost per|pricing)\b/i,            pts: 0.14 },
   { re: /\b(projected?|forecast|guidance|expected?|by 20\d\d|next year|long.?term|outlook)\b/i, pts: 0.10 },
+  { re: /\b(trillion|billion|million)\s*(dollar|of\s+dollar|\$)?s?\b/i,                 pts: 0.16 },
+  { re: /\b(hundred|thousand)s?\s+of\s+(billion|trillion|million)s?\b/i,                pts: 0.20 },
+  { re: /\b(commoditize|commoditized|margin\s+compress|margin\s+collapse|pricing\s+power)\b/i, pts: 0.14 },
+  { re: /\b(winner.?take.?all|network\s+effect|moat|lock.?in|switching\s+cost)\b/i,    pts: 0.12 },
 ];
 
 const LARGE_DOLLAR_RE = /\$\s*[\d,.]+\s*[TB]/i;

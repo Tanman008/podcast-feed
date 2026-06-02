@@ -13,7 +13,8 @@
     "rechunk": "tsx scripts/rechunk.ts",
     "inspect-claims": "tsx scripts/inspect-claims.ts",
     "re-extract-claims": "tsx scripts/re-extract-claims.ts",
-    "audit-interest": "tsx scripts/audit-interest.ts"
+    "audit-interest": "tsx scripts/audit-interest.ts",
+    "reindex-interests": "tsx scripts/reindex-interests.ts"
   },
   "dependencies": {
     "@deepgram/sdk": "^5.3.0",

@@ -11,12 +11,13 @@ import pLimit from 'p-limit';
 import { db } from '@/lib/db';
 import { parseTerm } from './parser';
 import { withRetry } from '@/lib/utils/retry';
+import type { ExtractedClaim } from '@/lib/ingestion/entityExtractor';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const VECTOR_CANDIDATES = 120;
 const MAX_CLAIMS_PER_EPISODE = 20;
-const SCORE_THRESHOLD = 0.20;
+const SCORE_THRESHOLD = 0.15;
 const CLAIM_CONCURRENCY = 8;
 
 // Pre-filter: only skip chunks that are clearly non-investable (CHITCHAT/sponsor reads).
@@ -67,18 +68,6 @@ interface CandidateChunk {
   combinedScore: number;
 }
 
-interface ExtractedClaim {
-  highlight: string;
-  startSentenceIndex: number;
-  endSentenceIndex: number;
-  primarySubject: string | null;
-  mentionedEntities: string[];
-  claimType: string;
-  specificity: number;
-  completeness: number;
-  gloss: string | null;
-  numbers: string[];
-}
 
 interface ChunkMeta {
   episodeId: string;
@@ -207,21 +196,20 @@ specificity = how precise and measurable the data is (0.7+ if quantified)
 completeness = 0.5-0.7 for 1 sentence with full data; 0.7-1.0 for 2-3 sentences
 
 ── IDEAS CLAIMS (claimType: thesis | competitive | position) ──
-Directional beliefs and structural insights. A single sentence IS complete if it states a clear idea.
-- "AI has driven the cost of idea generation down to almost zero." ✓ thesis — clear, arguable, directional
-- "The model layer will be commoditized once inference becomes cheap enough." ✓ thesis
-- "Microsoft's scaffolding advantage disappears if models become reliable end-to-end." ✓ competitive
-- "Whoever controls the data flywheel wins the enterprise layer." ✓ position
+Directional beliefs and structural insights. Include as many verbatim sentences as needed to capture the complete idea — typically 1-3.
+- "Structurally, hyperscale will never be a winner take all, because buyers are smart." ✓ thesis — falsifiable, specific, complete in 1 sentence
+- "The model layer will be commoditized once inference becomes cheap enough. Every incumbent who built a moat on proprietary models is going to face a margin collapse in the next 18 months." ✓ thesis — 2 sentences, stronger
+- "Microsoft's scaffolding advantage disappears if models become reliable end-to-end. The only reason Copilot has pricing power today is that raw models still fail on complex multi-step tasks." ✓ competitive
 specificity = how clearly-defined and arguable the idea is — NOT whether it has numbers
   High specificity (0.7): makes a falsifiable claim about a specific market dynamic
   Low specificity (0.2): vague generalization like "AI will change everything"
-completeness = 0.5 for a single self-contained assertion; 0.7+ if it includes the reasoning chain
+completeness = 0.5 for 1 self-contained sentence; 0.6-0.7 for 2 sentences; 0.8+ with full reasoning chain
 
 VERBATIM ONLY: Every word in the highlight MUST appear verbatim in the chunk text. Never write a new sentence. Never paraphrase. Never add "This indicates that..." or any synthesis. Copy and paste only.
 
 For each claim:
 {
-  "highlight": "verbatim text — 1 sentence for ideas, 2-3 sentences for signal",
+  "highlight": "verbatim text — 2-3 verbatim sentences for all claim types",
   "startSentenceIndex": 0,
   "endSentenceIndex": 0,
   "primarySubject": "entity this claim is ABOUT",
@@ -383,9 +371,13 @@ const MATERIALITY_PATTERNS: { re: RegExp; pts: number }[] = [
   { re: /\b(growth rate|CAGR|YoY|QoQ|grew|growing|grown)\b/i,                         pts: 0.14 },
   { re: /\b(TAM|market size|market share|addressable|penetration)\b/i,                 pts: 0.14 },
   { re: /\b(CapEx|capital expenditure|acquisition|buyback)\b/i,                        pts: 0.12 },
-  { re: /\b(valuation|multiple|P\/E|EV|price.?target)\b/i,                             pts: 0.14 },
+  { re: /\b(valuation|multiple|P\/E|EV|price.?target|worth)\b/i,                       pts: 0.14 },
   { re: /\b(unit economics?|inference cost|token cost|cost per|pricing)\b/i,           pts: 0.14 },
   { re: /\b(projected?|forecast|guidance|expected?|by 20\d\d|next year|long.?term|outlook)\b/i, pts: 0.10 },
+  { re: /\b(trillion|billion|million)\s*(dollar|of\s+dollar|\$)?s?\b/i,                pts: 0.16 },
+  { re: /\b(hundred|thousand)s?\s+of\s+(billion|trillion|million)s?\b/i,               pts: 0.20 },
+  { re: /\b(commoditize|commoditized|margin\s+compress|margin\s+collapse|pricing\s+power)\b/i, pts: 0.14 },
+  { re: /\b(winner.?take.?all|network\s+effect|moat|lock.?in|switching\s+cost)\b/i,   pts: 0.12 },
 ];
 
 const LARGE_DOLLAR_RE = /\$\s*[\d,.]+\s*[TB]/i;
@@ -597,7 +589,14 @@ export async function matchInterestAgainstEpisodes(
       0.02 * specificity;
 
     const claimTypeMultiplier = CLAIM_TYPE_MULTIPLIERS[claim.claimType] ?? 1.0;
-    const score = investmentScore * claimTypeMultiplier * (1 - platitudePenalty * 0.5);
+    // relevanceGate: interestMatch must be meaningful — a great signal about the wrong topic scores near zero
+    const relevanceGate = Math.pow(interestMatch, 1.5);
+    // entityGate: if neither direct entity mention nor economic exposure is present, suppress heavily.
+    // Prevents high-quality claims about unrelated topics from surfacing.
+    // economicExposure handles subsidiaries (GitHub → Microsoft), so this doesn't break those cases.
+    const entityRelevance = Math.max(entityWeight, economicExposure);
+    const entityGate = entityRelevance > 0.05 ? 1.0 : 0.35;
+    const score = investmentScore * claimTypeMultiplier * (1 - platitudePenalty * 0.5) * relevanceGate * entityGate;
 
     const ideaTypes = new Set(['thesis', 'competitive', 'position']);
     const quality = ideaTypes.has(claim.claimType)

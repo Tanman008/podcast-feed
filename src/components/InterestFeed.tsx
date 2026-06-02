@@ -50,19 +50,16 @@ interface Interest {
 interface Source { id: string; name: string }
 interface MonthBucket { month: string; count: number }
 
-type ClaimMode = 'signal' | 'ideas' | 'both';
-
 interface Filters {
   convictionMin: number;
   noveltyMin: number;
-  minRelevance: number;      // 0–1, secondary quality gate within each mode
+  minRelevance: number;
   chunksPerEpisode: number;
   dateRange: [number, number];
   sourceIds: string[];
   showContext: boolean;
-  authorityMin: number;      // 0–100, filter by speaker authority
-  authorityMax: number;      // 0–100
-  claimMode: ClaimMode;
+  authorityMin: number;
+  authorityMax: number;
 }
 
 type ViewMode = 'by_interest' | 'by_podcast' | 'combined';
@@ -88,10 +85,10 @@ function fmtDate(d: string | null | undefined) {
 }
 
 function matchQualityLabel(score: number): string {
-  if (score >= 0.75) return 'Best';
-  if (score >= 0.65) return 'Strong';
-  if (score >= 0.55) return 'Good';
-  if (score >= 0.45) return 'Fair';
+  if (score >= 0.40) return 'Best';
+  if (score >= 0.28) return 'Strong';
+  if (score >= 0.18) return 'Good';
+  if (score >= 0.10) return 'Fair';
   return 'Any';
 }
 
@@ -341,28 +338,6 @@ function Sidebar({
         </div>
       </SidebarSection>
 
-      <SidebarSection label="Claim mode">
-        <div className={`flex rounded border border-[#232323] overflow-hidden ${MONO} text-[9px]`}>
-          {([
-            ['signal', 'Signal'],
-            ['ideas',  'Ideas'],
-            ['both',   'Both'],
-          ] as [ClaimMode, string][]).map(([m, label]) => (
-            <button
-              key={m}
-              onClick={() => set({ claimMode: m })}
-              className={`flex-1 py-1.5 text-center uppercase tracking-wider transition-colors ${
-                filters.claimMode === m
-                  ? 'bg-[#C8900A] text-black font-bold'
-                  : 'text-[#666] hover:text-[#ccc] hover:bg-[#111]'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </SidebarSection>
-
       <SidebarSection label="Context">
         <button
           onClick={() => set({ showContext: !filters.showContext })}
@@ -378,13 +353,13 @@ function Sidebar({
       <SidebarSection label="Match quality">
         <div className="flex items-center gap-2 mb-1">
           <input
-            type="range" min={0.35} max={0.75} step={0.05}
-            value={filters.minRelevance || 0.35}
+            type="range" min={0} max={0.55} step={0.03}
+            value={filters.minRelevance ?? 0}
             onChange={e => set({ minRelevance: parseFloat(e.target.value) })}
             className="flex-1 h-1 rounded-full appearance-none cursor-pointer bg-[#1e1e1e] accent-[#C8900A]"
           />
           <span className={`text-[10px] text-[#C8900A] w-16 text-right shrink-0 ${MONO}`}>
-            {matchQualityLabel(filters.minRelevance || 0.35)}
+            {matchQualityLabel(filters.minRelevance ?? 0)}
           </span>
         </div>
         <div className={`flex justify-between text-[8px] text-[#333] mt-0.5 ${MONO}`}>
@@ -654,37 +629,26 @@ function MatchCard({ match, showContext, quality, sameChunkAsPrev }: {
 function applyFilters(matches: Match[], filters: Filters, buckets: MonthBucket[]): Match[] {
   const episodeCounts: Record<string, number> = {};
 
-  const ideaTypes = new Set(['thesis', 'competitive', 'position']);
-
   return matches.filter(m => {
     // ── Quality slider value ───────────────────────────────────────────────
-    const r = filters.minRelevance || 0.35;
+    const r = filters.minRelevance ?? 0;
 
-    // ── Mode gate ──────────────────────────────────────────────────────────
-    const mode = filters.claimMode ?? 'signal';
-    const isIdea = ideaTypes.has(m.claim.claimType);
-    if (mode === 'signal') {
-      // Signal: data-backed claims only; 2+ sentences only at Good quality and above
-      if (m.quality !== 'high') return false;
-      if (r >= 0.55) {
-        const boundaries = m.claim.highlight.match(/[.!?](?:\s+[A-Z"']|\s*$)/g) ?? [];
-        if (boundaries.length < 2) return false;
-      }
-    } else if (mode === 'ideas') {
-      // Ideas: thesis/opinion/competitive only
-      if (!isIdea || m.quality === 'low') return false;
-    } else {
-      // Both: any quality except 'low'
-      if (m.quality === 'low') return false;
-    }
+    // ── Score gate — slider directly gates by InterestMatch score ─────────
+    if (r > 0 && m.score < r) return false;
 
-    // ── Quality slider — secondary filter within mode ───────────────────
+    // ── Quality gate — drop only the lowest quality claims ────────────────
+    if (m.quality === 'low') return false;
+
+    // ── Minimum length — too short to be useful to an investor ────────────
+    const wordCount = m.claim.highlight.trim().split(/\s+/).length;
+    if (wordCount < 20) return false;
+
+    // ── Quality slider — secondary filter ─────────────────────────────────
     if (r >= 0.75) {
       if (!m.claim.numbers || m.claim.numbers.length === 0) return false;
-    } else if (r >= 0.55 && mode === 'ideas') {
+    } else if (r >= 0.55) {
       if (m.claim.specificity < 0.35) return false;
     }
-    // Any / Fair (r < 0.55): show all within mode
     // Source filter
     if (filters.sourceIds.length > 0 && m.episode.source && !filters.sourceIds.includes(m.episode.source.name)) return false;
     // Authority filter — only applied to chunks that have a score
@@ -865,7 +829,6 @@ export function InterestFeed() {
     showContext: true,
     authorityMin: 0,
     authorityMax: 100,
-    claimMode: 'signal',
   });
 
   const loadInterests = useCallback(async () => {

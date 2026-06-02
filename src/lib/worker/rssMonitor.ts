@@ -22,6 +22,7 @@ async function listVideosViaYtdlp(
     '--flat-playlist',
     '--print', '%(id)s %(duration)s %(timestamp)s',
     '--playlist-end', String(playlistEnd),
+    '--extractor-args', 'youtube:player_client=ios',
     '--no-warnings',
     '--quiet',
     `${channelUrl}/videos`,

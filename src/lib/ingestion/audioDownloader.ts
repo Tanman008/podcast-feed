@@ -15,6 +15,10 @@ export interface AudioFile {
   cleanup: () => void;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // Fast metadata-only call — no audio downloaded, no Deepgram cost.
 // Returns duration and upload date in a single yt-dlp invocation.
 export async function fetchVideoInfo(videoId: string): Promise<{ durationSeconds: number | null; uploadDate: Date | null }> {
@@ -49,12 +53,28 @@ export async function downloadAudio(videoId: string): Promise<AudioFile> {
   try { fs.unlinkSync(outputPath); } catch {}
 
   const url = `https://www.youtube.com/watch?v=${videoId}`;
-  // -f "bestaudio[ext=m4a]" downloads YouTube's native m4a audio stream (format 140).
-  // No -x / --audio-format flags = no ffmpeg post-processing required.
-  await execAsync(
-    `yt-dlp -f "bestaudio[ext=m4a]" --no-playlist --js-runtimes "node:${process.execPath}" -o "${outputPath}" "${url}"`,
-    { timeout: 600_000 }
-  );
+
+  // Retry with backoff on 429. yt-dlp exits non-zero on 429 and includes it in stderr.
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await execAsync(
+        `yt-dlp -f "bestaudio[ext=m4a]" --no-playlist --js-runtimes "node:${process.execPath}" -o "${outputPath}" "${url}"`,
+        { timeout: 600_000 }
+      );
+      break;
+    } catch (err: any) {
+      const msg: string = err?.stderr ?? err?.message ?? '';
+      const is429 = msg.includes('429') || msg.includes('Too Many Requests');
+      if (is429 && attempt < maxAttempts) {
+        const delaySec = 15 * attempt; // 15s, 30s
+        console.warn(`[audioDownloader] 429 on attempt ${attempt}, retrying in ${delaySec}s`);
+        await sleep(delaySec * 1000);
+        continue;
+      }
+      throw err;
+    }
+  }
 
   if (!fs.existsSync(outputPath)) {
     throw new Error(`yt-dlp completed but output file not found: ${outputPath}`);

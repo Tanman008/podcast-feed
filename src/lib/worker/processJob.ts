@@ -16,7 +16,7 @@ import { checkIsDuplicate } from '@/lib/ingestion/deduplication';
 import { scoreNoveltyBatch } from '@/lib/scoring/novelty';
 import { getOrAssessSpeakerAuthority } from '@/lib/scoring/speakerAuthority';
 import { completeJob, failJob, updateJobProgress } from './claim';
-import { matchEpisodeAgainstAllInterests, preExtractEpisodeClaims } from '@/lib/matching/engine';
+import { matchEpisodeAgainstAllInterests } from '@/lib/matching/engine';
 
 async function deleteEpisodeIfExists(episodeId: string): Promise<void> {
   try {
@@ -233,6 +233,25 @@ export async function processJob(job: IngestionJob): Promise<void> {
         WHERE id = ${dbChunk.id}
       `;
 
+      // Persist claims extracted in the combined LLM call
+      for (const claim of analysis.claims) {
+        await db.claim.create({
+          data: {
+            chunkId:            dbChunk.id,
+            highlight:          claim.highlight,
+            startSentenceIndex: claim.startSentenceIndex ?? 0,
+            endSentenceIndex:   claim.endSentenceIndex   ?? 0,
+            primarySubject:     claim.primarySubject     ?? null,
+            mentionedEntities:  claim.mentionedEntities  ?? [],
+            claimType:          claim.claimType,
+            specificity:        claim.specificity,
+            completeness:       claim.completeness,
+            gloss:              claim.gloss ?? null,
+            numbers:            claim.numbers ?? [],
+          },
+        });
+      }
+
       totalEntityCount += analysis.entities.length;
 
       for (const extractedEntity of analysis.entities) {
@@ -275,10 +294,6 @@ export async function processJob(job: IngestionJob): Promise<void> {
 
     console.log(`[Job ${job.id}] Pass 2: Scoring novelty...`);
     await scoreNoveltyBatch(episode.id);
-
-    // Pre-extract claim units so interest matching is cache-only (no per-match LLM calls)
-    console.log(`[Job ${job.id}] Pre-extracting claim units...`);
-    await preExtractEpisodeClaims(episode.id);
 
     await updateJobProgress(job.id, 95, chunks.length, chunks.length);
 
