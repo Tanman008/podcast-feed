@@ -68,7 +68,7 @@ export async function processJob(job: IngestionJob): Promise<void> {
         externalId: videoId,
         title: metadata.title,
         thumbnailUrl: metadata.thumbnailUrl,
-        publishedAt: metadata.publishedAt,
+        publishedAt: null,
         transcriptStatus: TranscriptStatus.processing,
       },
     });
@@ -86,8 +86,7 @@ export async function processJob(job: IngestionJob): Promise<void> {
 
     console.log(`[Job ${job.id}] Pre-checking video duration and date...`);
     const { durationSeconds: preCheckSecs, uploadDate } = await fetchVideoInfo(videoId);
-    // Only set publishedAt from yt-dlp if RSS pre-seeding didn't already provide one
-    if (uploadDate && !episode.publishedAt) {
+    if (uploadDate) {
       await db.episode.update({ where: { id: episode.id }, data: { publishedAt: uploadDate } });
     }
 

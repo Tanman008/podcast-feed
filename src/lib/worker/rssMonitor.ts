@@ -1,13 +1,8 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { db } from '@/lib/db';
-import { fetchChannelFeed } from '@/lib/youtube/channels';
 
 const execFileAsync = promisify(execFile);
-
-function extractChannelId(url: string): string | null {
-  return url.match(/youtube\.com\/channel\/(UC[\w-]+)/)?.[1] ?? null;
-}
 
 interface CheckOptions {
   backfillCount?: number;
@@ -21,11 +16,12 @@ async function listVideosViaYtdlp(
   count: number,
   minSecs: number | null,
   maxSecs: number | null
-): Promise<{ videoId: string }[]> {
+): Promise<{ videoId: string; publishedAt?: Date }[]> {
+  const playlistEnd = Math.min(count * 4, 500); // over-fetch to account for filtered videos
   const args: string[] = [
     '--flat-playlist',
-    '--print', '%(id)s %(duration)s',
-    '--playlist-end', '500',
+    '--print', '%(id)s %(duration)s %(timestamp)s',
+    '--playlist-end', String(playlistEnd),
     '--no-warnings',
     '--quiet',
     `${channelUrl}/videos`,
@@ -39,7 +35,7 @@ async function listVideosViaYtdlp(
     if (!stdout.trim()) throw new Error(`yt-dlp failed: ${err.message}`);
   }
 
-  const entries: { videoId: string }[] = [];
+  const entries: { videoId: string; publishedAt?: Date }[] = [];
   for (const line of stdout.split('\n')) {
     if (entries.length >= count) break;
 
@@ -48,11 +44,14 @@ async function listVideosViaYtdlp(
     if (!videoId || videoId === 'NA') continue;
 
     const duration = parseFloat(parts[1]);
-    if (isNaN(duration)) continue; // flat-playlist may omit duration for some videos — skip
+    if (isNaN(duration)) continue;
     if (minSecs !== null && duration < minSecs) continue;
     if (maxSecs !== null && duration > maxSecs) continue;
 
-    entries.push({ videoId });
+    const ts = parseInt(parts[2]);
+    const publishedAt = !isNaN(ts) && ts > 0 ? new Date(ts * 1000) : undefined;
+
+    entries.push({ videoId, publishedAt });
   }
 
   return entries;
@@ -68,38 +67,21 @@ export async function checkChannelForNewVideos(
   });
   if (!source) return 0;
 
-  const channelId = extractChannelId(source.url);
-  if (!channelId) {
-    console.log(`[RSS] ${source.name}: no channel ID in URL, skipping`);
+  // yt-dlp handles all URL formats: /channel/UC..., /@handle, /c/name
+  const count = options.backfillCount && options.backfillCount > 0 ? options.backfillCount : 15;
+  let videosToEnqueue: { videoId: string; publishedAt?: Date }[];
+
+  try {
+    videosToEnqueue = await listVideosViaYtdlp(
+      source.url,
+      count,
+      source.minDurationSeconds,
+      source.maxDurationSeconds
+    );
+    console.log(`[Monitor] ${source.name}: yt-dlp found ${videosToEnqueue.length} videos`);
+  } catch (err) {
+    console.warn(`[Monitor] ${source.name}: yt-dlp failed, skipping:`, err);
     return 0;
-  }
-
-  // Backfill (backfillCount > 0): use yt-dlp so we can go beyond the ~15 RSS cap.
-  // Ongoing monitoring (no backfillCount): use RSS — faster, no process spawn.
-  interface VideoToEnqueue {
-    videoId: string;
-    publishedAt?: Date;
-  }
-  let videosToEnqueue: VideoToEnqueue[];
-
-  if (options.backfillCount && options.backfillCount > 0) {
-    try {
-      const entries = await listVideosViaYtdlp(
-        source.url,
-        options.backfillCount,
-        source.minDurationSeconds,
-        source.maxDurationSeconds
-      );
-      videosToEnqueue = entries.map(e => ({ videoId: e.videoId }));
-      console.log(`[Backfill] ${source.name}: yt-dlp found ${videosToEnqueue.length} videos in length range`);
-    } catch (err) {
-      console.warn(`[Backfill] ${source.name}: yt-dlp failed, falling back to RSS:`, err);
-      const rssEntries = await fetchChannelFeed(channelId);
-      videosToEnqueue = rssEntries.map(e => ({ videoId: e.videoId, publishedAt: e.published }));
-    }
-  } else {
-    const rssEntries = await fetchChannelFeed(channelId);
-    videosToEnqueue = rssEntries.map(e => ({ videoId: e.videoId, publishedAt: e.published }));
   }
 
   let enqueued = 0;
