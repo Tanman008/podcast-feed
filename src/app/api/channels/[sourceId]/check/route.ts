@@ -1,5 +1,6 @@
 // POST /api/channels/[sourceId]/check — manually trigger a feed check (RSS or search)
 import { NextRequest, NextResponse } from 'next/server';
+import { SourceType } from '@prisma/client';
 import { db } from '@/lib/db';
 import { checkChannelForNewVideos } from '@/lib/worker/rssMonitor';
 import { checkSearchForNewEpisodes } from '@/lib/worker/searchMonitor';
@@ -18,7 +19,7 @@ export async function POST(
       select: { sourceType: true },
     });
 
-    const enqueued = source?.sourceType === 'search'
+    const enqueued = source?.sourceType === SourceType.search
       ? await checkSearchForNewEpisodes(sourceId)
       : await checkChannelForNewVideos(sourceId, { backfillCount });
 
