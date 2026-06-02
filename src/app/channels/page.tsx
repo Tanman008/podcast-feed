@@ -366,13 +366,13 @@ export default function ChannelsPage() {
         {/* Add channel */}
         <form onSubmit={handleAdd} className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-5">
           <h2 className="text-xs font-semibold text-[#888] mb-1 uppercase tracking-widest">Follow a channel</h2>
-          <p className="text-[11px] text-[#444] mb-3">Paste a Podcast Index URL, RSS feed URL, or podcast name to follow.</p>
+          <p className="text-[11px] text-[#444] mb-3">Type a podcast name, paste an RSS feed URL, or paste a Podcast Index URL.</p>
 
           <div className="flex gap-2 mb-3">
             <input
               value={url}
               onChange={e => setUrl(e.target.value)}
-              placeholder="https://podcastindex.org/podcast/920666 or RSS feed URL"
+              placeholder="e.g. Acquired, All-In, or paste RSS/Podcast Index URL"
               className="flex-1 px-3 py-2 bg-[#080808] border border-[#222] rounded-lg text-sm text-white placeholder-[#333] focus:outline-none focus:ring-1 focus:ring-[#C8900A]/40"
             />
             <button

@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
     const info = await resolvePodcast(url.trim());
     if (!info) {
       return NextResponse.json(
-        { error: 'Could not resolve podcast. Try a Podcast Index URL (podcastindex.org/podcast/...) or RSS feed URL.' },
+        { error: 'Could not find podcast. Try a more specific name, an RSS feed URL, or a Podcast Index URL.' },
         { status: 400 }
       );
     }
@@ -77,6 +77,7 @@ export async function POST(req: NextRequest) {
           sourceType:         'podcast',
           platform:           'podcast_index',
           url:                info.canonicalUrl,
+          feedUrl:            info.feedUrl,
           imageUrl:           feed?.image ?? info.imageUrl ?? null,
           minDurationSeconds: minDurationSeconds ?? null,
           maxDurationSeconds: maxDurationSeconds ?? null,

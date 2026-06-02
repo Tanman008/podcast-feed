@@ -73,6 +73,7 @@ model Source {
   sourceType  SourceType
   platform    String
   url         String
+  feedUrl     String?  // Direct RSS feed URL for polling
   description        String?
   imageUrl           String?
   minDurationSeconds Int?     // null = no minimum filter

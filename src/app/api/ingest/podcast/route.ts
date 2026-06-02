@@ -13,7 +13,6 @@ function slugify(name: string): string {
 }
 
 async function upsertSourceFromFeed(feedId: number, feedTitle: string, feedUrl: string): Promise<string> {
-  // Try to find by Podcast Index canonical URL
   const canonicalUrl = `https://podcastindex.org/podcast/${feedId}`;
   const existing = await db.source.findFirst({
     where: { OR: [{ url: canonicalUrl }, { url: feedUrl }] },
@@ -33,6 +32,7 @@ async function upsertSourceFromFeed(feedId: number, feedTitle: string, feedUrl: 
           sourceType: 'podcast',
           platform:   'podcast_index',
           url:        canonicalUrl,
+          feedUrl:    feedUrl || null,
           imageUrl:   feedId ? (await getPodcastById(feedId))?.image ?? null : null,
         },
       });

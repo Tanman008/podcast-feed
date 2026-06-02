@@ -55,5 +55,18 @@ export async function resolvePodcast(input: string): Promise<PodcastInfo | null>
 
   // Free-text → search and return best match
   const results = await searchPodcasts(trimmed);
-  return results.length > 0 ? feedToInfo(results[0]) : null;
+  if (!results.length) return null;
+
+  const q = trimmed.toLowerCase();
+
+  // 1. Exact title match
+  const exact = results.find(f => f.title.toLowerCase() === q);
+  if (exact) return feedToInfo(exact);
+
+  // 2. Title starts with query (e.g. "all-in" → "All-In Podcast")
+  const startsWith = results.find(f => f.title.toLowerCase().startsWith(q));
+  if (startsWith) return feedToInfo(startsWith);
+
+  // 3. First result
+  return feedToInfo(results[0]);
 }

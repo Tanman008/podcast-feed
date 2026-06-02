@@ -37,29 +37,8 @@ export async function processJob(job: IngestionJob): Promise<void> {
     // PASS 1: Persist chunks + embeddings + entities + conviction
     // ───────────────────────────────────────────────────────────────────────
 
-    // 1. Fetch episode metadata from Podcast Index (title, audioUrl, duration, publishedAt)
-    console.log(`[Job ${job.id}] Fetching episode metadata...`);
-    let metadata: Awaited<ReturnType<typeof fetchEpisodeMetadata>>;
-    try {
-      metadata = await fetchEpisodeMetadata(episodeUrl);
-    } catch (err: any) {
-      await failJob(job.id, `Could not resolve episode metadata: ${err.message}`);
-      return;
-    }
-
-    if (!metadata.audioUrl) {
-      await failJob(job.id, 'Episode has no audio URL');
-      return;
-    }
-
-    // 2. Fail fast on duplicate before spending money on transcription
-    const earlyDupCheck = await checkIsDuplicate(metadata.externalId, job.sourceId);
-    if (earlyDupCheck.isDuplicate) {
-      await failJob(job.id, `Duplicate episode: ${earlyDupCheck.reason}`);
-      return;
-    }
-
-    // 3. Duration pre-check — free, comes from Podcast Index metadata
+    // 1. Resolve episode — use pre-populated episode if RSS monitor already created it,
+    //    otherwise fall back to Podcast Index metadata lookup.
     const sourceSettings = await db.source.findUnique({
       where: { id: job.sourceId },
       select: { minDurationSeconds: true, maxDurationSeconds: true },
@@ -67,38 +46,94 @@ export async function processJob(job: IngestionJob): Promise<void> {
     const minSecs = sourceSettings?.minDurationSeconds ?? 60;
     const maxSecs = sourceSettings?.maxDurationSeconds ?? null;
 
-    if (metadata.durationSeconds !== null) {
-      if (metadata.durationSeconds < minSecs) {
-        await failJob(job.id, `Episode too short (${Math.round(metadata.durationSeconds / 60)}m) — below minimum of ${Math.round(minSecs / 60)}m`);
-        return;
-      }
-      if (maxSecs !== null && metadata.durationSeconds > maxSecs) {
-        await failJob(job.id, `Episode too long (${Math.round(metadata.durationSeconds / 60)}m) — above maximum of ${Math.round(maxSecs / 60)}m`);
-        return;
-      }
-    }
+    let audioUrl: string;
+    let episode: { id: string };
 
-    // 4. Upsert episode so job progress is visible in UI
-    const episode = await db.episode.upsert({
-      where: { sourceId_externalId: { sourceId: job.sourceId, externalId: metadata.externalId } },
-      update: { title: metadata.title, transcriptStatus: TranscriptStatus.processing },
-      create: {
-        sourceId:        job.sourceId,
-        externalId:      metadata.externalId,
-        title:           metadata.title,
-        description:     metadata.description || null,
-        thumbnailUrl:    metadata.thumbnailUrl,
-        publishedAt:     metadata.publishedAt,
-        transcriptStatus: TranscriptStatus.processing,
-      },
-    });
+    const preExisting = job.episodeId
+      ? await db.episode.findUnique({
+          where: { id: job.episodeId },
+          select: { id: true, title: true, durationSeconds: true },
+        })
+      : null;
+
+    if (preExisting) {
+      // Job came from RSS monitor — episode already created, episodeUrl IS the audio URL
+      audioUrl = episodeUrl;
+
+      // Duration check using RSS-provided duration
+      if (preExisting.durationSeconds !== null) {
+        if (preExisting.durationSeconds < minSecs) {
+          await failJob(job.id, `Episode too short (${Math.round(preExisting.durationSeconds / 60)}m)`);
+          await deleteEpisodeIfExists(preExisting.id);
+          return;
+        }
+        if (maxSecs !== null && preExisting.durationSeconds > maxSecs) {
+          await failJob(job.id, `Episode too long (${Math.round(preExisting.durationSeconds / 60)}m)`);
+          await deleteEpisodeIfExists(preExisting.id);
+          return;
+        }
+      }
+
+      await db.episode.update({
+        where: { id: preExisting.id },
+        data: { transcriptStatus: TranscriptStatus.processing },
+      });
+      episode = preExisting;
+    } else {
+      // Job came from manual ingest form — resolve via Podcast Index
+      console.log(`[Job ${job.id}] Fetching episode metadata...`);
+      let metadata: Awaited<ReturnType<typeof fetchEpisodeMetadata>>;
+      try {
+        metadata = await fetchEpisodeMetadata(episodeUrl);
+      } catch (err: any) {
+        await failJob(job.id, `Could not resolve episode metadata: ${err.message}`);
+        return;
+      }
+
+      if (!metadata.audioUrl) {
+        await failJob(job.id, 'Episode has no audio URL');
+        return;
+      }
+
+      const earlyDupCheck = await checkIsDuplicate(metadata.externalId, job.sourceId);
+      if (earlyDupCheck.isDuplicate) {
+        await failJob(job.id, `Duplicate episode: ${earlyDupCheck.reason}`);
+        return;
+      }
+
+      if (metadata.durationSeconds !== null) {
+        if (metadata.durationSeconds < minSecs) {
+          await failJob(job.id, `Episode too short (${Math.round(metadata.durationSeconds / 60)}m)`);
+          return;
+        }
+        if (maxSecs !== null && metadata.durationSeconds > maxSecs) {
+          await failJob(job.id, `Episode too long (${Math.round(metadata.durationSeconds / 60)}m)`);
+          return;
+        }
+      }
+
+      episode = await db.episode.upsert({
+        where: { sourceId_externalId: { sourceId: job.sourceId, externalId: metadata.externalId } },
+        update: { title: metadata.title, transcriptStatus: TranscriptStatus.processing },
+        create: {
+          sourceId:         job.sourceId,
+          externalId:       metadata.externalId,
+          title:            metadata.title,
+          description:      metadata.description || null,
+          thumbnailUrl:     metadata.thumbnailUrl,
+          publishedAt:      metadata.publishedAt,
+          transcriptStatus: TranscriptStatus.processing,
+        },
+      });
+      audioUrl = metadata.audioUrl;
+    }
 
     await db.ingestionJob.update({ where: { id: job.id }, data: { episodeId: episode.id } });
     await updateJobProgress(job.id, 5, 0);
 
-    // 5. Download audio directly from podcast CDN (no yt-dlp)
-    console.log(`[Job ${job.id}] Downloading audio from ${metadata.audioUrl}`);
-    const audio = await downloadFromUrl(metadata.audioUrl, episode.id);
+    // 2. Download audio directly from podcast CDN
+    console.log(`[Job ${job.id}] Downloading audio from ${audioUrl}`);
+    const audio = await downloadFromUrl(audioUrl, episode.id);
     await updateJobProgress(job.id, 15, 0);
 
     // 5. Transcribe + diarize via Deepgram
@@ -142,8 +177,11 @@ export async function processJob(job: IngestionJob): Promise<void> {
     // Identify speaker names from transcript context (best-effort, non-blocking)
     console.log(`[Job ${job.id}] Identifying speakers...`);
     const source = await db.source.findUnique({ where: { id: job.sourceId }, select: { name: true } });
+    const episodeTitle = preExisting
+      ? preExisting.title
+      : (episode as any).title ?? '';
     const speakerNames = await identifySpeakers(segments, {
-      episodeTitle: metadata.title,
+      episodeTitle,
       sourceName: source?.name ?? undefined,
     }).catch(() => ({} as Record<string, string>));
 

@@ -47,21 +47,23 @@ async function cleanupStaleJobs(): Promise<void> {
   if (stale.length === 0) return;
   console.log(`[Worker] Cleaning up ${stale.length} stale job(s) from previous process...`);
 
+  // Reset status first so jobs are never left permanently stuck
+  await db.ingestionJob.updateMany({
+    where: { id: { in: stale.map(j => j.id) } },
+    data: { status: 'failed', errorMessage: 'Worker restarted mid-job' },
+  });
+
+  // Best-effort data cleanup for jobs that had partial episode data
   for (const job of stale) {
+    if (!job.episodeId) continue;
     try {
-      if (job.episodeId) {
-        await db.chunkEntity.deleteMany({ where: { chunk: { episodeId: job.episodeId } } });
-        await db.claim.deleteMany({ where: { chunk: { episodeId: job.episodeId } } });
-        await db.transcriptChunk.deleteMany({ where: { episodeId: job.episodeId } });
-        await db.episode.deleteMany({ where: { id: job.episodeId } });
-      }
-      await db.ingestionJob.update({
-        where: { id: job.id },
-        data: { status: 'failed', errorMessage: 'Worker restarted mid-job' },
-      });
+      await db.chunkEntity.deleteMany({ where: { chunk: { episodeId: job.episodeId } } });
+      await db.claim.deleteMany({ where: { chunk: { episodeId: job.episodeId } } });
+      await db.transcriptChunk.deleteMany({ where: { episodeId: job.episodeId } });
+      await db.episode.deleteMany({ where: { id: job.episodeId } });
       console.log(`[Worker] Cleaned up stale job ${job.id}`);
     } catch (err) {
-      console.warn(`[Worker] Failed to clean up job ${job.id}:`, err);
+      console.warn(`[Worker] Failed to clean partial data for job ${job.id}:`, err);
     }
   }
 }
