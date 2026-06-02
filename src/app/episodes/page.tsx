@@ -1,4 +1,6 @@
 // src/app/episodes/page.tsx — ingestion history and entity browser
+export const dynamic = 'force-dynamic';
+
 import Link from 'next/link';
 import { db } from '@/lib/db';
 import { DeleteEpisodeButton, ClearAllButton } from '@/components/DeleteEpisodeButton';
