@@ -67,7 +67,7 @@ export async function downloadAudio(videoId: string): Promise<AudioFile> {
       const msg: string = err?.stderr ?? err?.message ?? '';
       const is429 = msg.includes('429') || msg.includes('Too Many Requests');
       if (is429 && attempt < maxAttempts) {
-        const delaySec = 15 * attempt; // 15s, 30s
+        const delaySec = attempt === 1 ? 120 : 300; // 2min, then 5min
         console.warn(`[audioDownloader] 429 on attempt ${attempt}, retrying in ${delaySec}s`);
         await sleep(delaySec * 1000);
         continue;

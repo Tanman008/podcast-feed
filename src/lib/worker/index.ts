@@ -10,7 +10,7 @@ import { db } from '@/lib/db';
 
 const POLL_INTERVAL_MS    = 5_000;        // job poll: every 5s
 const RSS_INTERVAL_MS     = 30 * 60_000; // RSS poll: every 30 min
-const MAX_CONCURRENT_JOBS = 2;
+const MAX_CONCURRENT_JOBS = 1;
 
 let isRunning  = true;
 let activeJobs = 0;
