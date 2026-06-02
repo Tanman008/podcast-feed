@@ -57,6 +57,7 @@ export async function POST(req: NextRequest) {
         data: {
           name:      info.name,
           url:       info.canonicalUrl,
+          feedUrl:   info.feedUrl,
           following: true,
           ...(minDurationSeconds !== undefined && { minDurationSeconds: minDurationSeconds ?? null }),
           ...(maxDurationSeconds !== undefined && { maxDurationSeconds: maxDurationSeconds ?? null }),
