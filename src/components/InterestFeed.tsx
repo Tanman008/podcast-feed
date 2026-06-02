@@ -66,8 +66,6 @@ interface Filters {
   dateRange: [number, number];
   sourceIds: string[];
   showContext: boolean;
-  authorityMin: number;
-  authorityMax: number;
   followedOnly: boolean;
 }
 
@@ -402,47 +400,6 @@ function Sidebar({
         </div>
       </SidebarSection>
 
-      <SidebarSection label="Speaker authority" defaultOpen={false}>
-        <div className="flex items-center gap-1.5 mb-1">
-          <input
-            type="number" min={0} max={100}
-            value={filters.authorityMin}
-            onChange={e => {
-              const v = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
-              if (v <= filters.authorityMax) set({ authorityMin: v });
-            }}
-            className={`w-9 text-center bg-[#0d0d0d] border border-[#222] rounded text-[10px] text-white focus:outline-none focus:ring-1 focus:ring-[#C8900A]/40 py-0.5 ${MONO}`}
-          />
-          <div className="flex-1 relative h-3">
-            <div className="range-slider-track" />
-            <div
-              className="absolute top-1/2 -translate-y-1/2 h-0.5 bg-[#C8900A] pointer-events-none"
-              style={{ left: `${filters.authorityMin}%`, right: `${100 - filters.authorityMax}%` }}
-            />
-            <input type="range" min={0} max={100} value={filters.authorityMin}
-              onChange={e => { const v = parseInt(e.target.value); if (v <= filters.authorityMax) set({ authorityMin: v }); }}
-              className="range-slider-thumb" style={{ zIndex: filters.authorityMin >= filters.authorityMax - 1 ? 5 : 3 }}
-            />
-            <input type="range" min={0} max={100} value={filters.authorityMax}
-              onChange={e => { const v = parseInt(e.target.value); if (v >= filters.authorityMin) set({ authorityMax: v }); }}
-              className="range-slider-thumb" style={{ zIndex: 4 }}
-            />
-          </div>
-          <input
-            type="number" min={0} max={100}
-            value={filters.authorityMax}
-            onChange={e => {
-              const v = Math.max(0, Math.min(100, parseInt(e.target.value) || 100));
-              if (v >= filters.authorityMin) set({ authorityMax: v });
-            }}
-            className={`w-9 text-center bg-[#0d0d0d] border border-[#222] rounded text-[10px] text-white focus:outline-none focus:ring-1 focus:ring-[#C8900A]/40 py-0.5 ${MONO}`}
-          />
-        </div>
-        <div className={`flex justify-end text-[8px] text-[#333] ${MONO}`}>
-          <span>CEO / Founder</span>
-        </div>
-      </SidebarSection>
-
       <SidebarSection label="Date range" defaultOpen={true}>
         {buckets.length > 0 ? (
           <HistogramSlider
@@ -525,7 +482,6 @@ function MatchCard({ match, showContext, quality, sameChunkAsPrev }: {
   const speaker = match.chunk.speakerName ?? (match.chunk.speakerLabel !== null ? `Speaker ${match.chunk.speakerLabel}` : null);
   const SPEAKER = speaker?.toUpperCase() ?? null;
   const ytUrl = `https://youtu.be/${match.episode.externalId}?t=${Math.floor(match.chunk.startTimeSeconds)}`;
-  const auth = match.chunk.authorityScore;
 
   async function handleSummary() {
     if (summaryLoading) return;
@@ -550,7 +506,6 @@ function MatchCard({ match, showContext, quality, sameChunkAsPrev }: {
     ? (pct >= 60 ? 'rgba(200,144,10,0.4)' : 'rgba(200,144,10,0.15)')
     : (pct >= 80 ? '#C8900A' : pct >= 60 ? 'rgba(200,144,10,0.6)' : pct >= 40 ? 'rgba(200,144,10,0.3)' : '#2a2a2a');
   const btn = `text-[11px] text-[#aaa] hover:text-white w-6 h-6 flex items-center justify-center rounded hover:bg-[#1e1e1e] transition-colors ${MONO}`;
-  const claimTypeLabel = match.claim.claimType.replace('_', ' ');
 
   return (
     <>
@@ -568,14 +523,8 @@ function MatchCard({ match, showContext, quality, sameChunkAsPrev }: {
           <span className="text-[#bbb] uppercase tracking-wider shrink-0 font-semibold text-[9px]">
             {match.episode.source?.name ?? 'Unknown'}
           </span>
-          {match.sourceFollowed && (
-            <span className="ml-1.5 shrink-0 w-1.5 h-1.5 rounded-full bg-[#22c55e]" title="Following" />
-          )}
           <span className="text-[#2a2a2a] mx-1.5 shrink-0">/</span>
           <span className="text-[#777] truncate flex-1 min-w-0">{match.episode.title}</span>
-          <span className={`text-[8px] text-[#383838] uppercase tracking-widest ml-2 shrink-0 ${MONO}`}>
-            {claimTypeLabel}
-          </span>
           {match.episode.publishedAt && (
             <span className="text-[#444] ml-2 shrink-0 text-[9px]">{fmtDate(match.episode.publishedAt)}</span>
           )}
@@ -586,11 +535,8 @@ function MatchCard({ match, showContext, quality, sameChunkAsPrev }: {
         {/* Key quote — with optional inline context sentences */}
         <div className={`text-[14px] leading-[1.75] mb-1.5 ${MONO}`}>
           {SPEAKER && (
-            <span className="mr-1.5 inline-flex items-center gap-1.5">
+            <span className="mr-1.5 inline-flex items-center gap-1">
               <span className="text-[#C8900A] font-bold text-[11px] tracking-wide">{SPEAKER}</span>
-              {auth !== null && auth >= 0.60 && (
-                <span className={`text-[11px] font-bold ${auth >= 0.80 ? 'text-[#C8900A]' : 'text-[#C8900A]/50'}`} title={`Authority: ${Math.round(auth * 100)}`}>*</span>
-              )}
               <span className="text-[#C8900A] font-bold text-[11px]">:</span>
             </span>
           )}
@@ -678,11 +624,6 @@ function applyFilters(matches: Match[], filters: Filters, buckets: MonthBucket[]
     }
     // Source filter
     if (filters.sourceIds.length > 0 && m.episode.source && !filters.sourceIds.includes(m.episode.source.name)) return false;
-    // Authority filter — only applied to chunks that have a score
-    if (m.chunk.authorityScore !== null) {
-      const pct = Math.round(m.chunk.authorityScore * 100);
-      if (pct < filters.authorityMin || pct > filters.authorityMax) return false;
-    }
     // Date range
     if (filters.dateRange[0] !== -1 && buckets.length > 0) {
       const from = buckets[filters.dateRange[0]]?.month;
@@ -895,8 +836,6 @@ export function InterestFeed() {
     dateRange: [-1, -1],
     sourceIds: [],
     showContext: true,
-    authorityMin: 0,
-    authorityMax: 100,
     followedOnly: false,
   });
 
