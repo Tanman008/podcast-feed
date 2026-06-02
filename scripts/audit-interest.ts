@@ -224,9 +224,10 @@ async function main() {
     episodeTitle: string;
   };
 
-  const scored: Scored[] = rows.map((row, i) => {
+  const scored: Scored[] = rows.flatMap((row, i) => {
     const c        = row.claim;
     const chunk    = row.chunk;
+    if (!c || !chunk) return [];
     const numbers  = c.numbers ?? [];
     const mat      = computeMateriality(c.highlight, numbers);
     const numInfo  = computeNumericInfo(numbers, c.highlight);
