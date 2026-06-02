@@ -1,14 +1,12 @@
 // lib/ingestion/audioDownloader.ts
-// Downloads YouTube audio to a temp file via yt-dlp.
-// Caller must call cleanup() after transcription to free disk space.
+// Downloads podcast audio directly from a CDN/RSS enclosure URL.
+// No yt-dlp dependency — works for any public podcast audio URL.
 
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-
-const execAsync = promisify(exec);
+import * as https from 'https';
+import * as http from 'http';
 
 export interface AudioFile {
   path: string;
@@ -19,57 +17,52 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Fast metadata-only call — no audio downloaded, no Deepgram cost.
-// Returns duration and upload date in a single yt-dlp invocation.
-export async function fetchVideoInfo(videoId: string): Promise<{ durationSeconds: number | null; uploadDate: Date | null }> {
-  const url = `https://www.youtube.com/watch?v=${videoId}`;
-  try {
-    const { stdout } = await execAsync(
-      `yt-dlp --print "%(duration)s %(upload_date)s" --no-playlist --js-runtimes "node:${process.execPath}" "${url}"`,
-      { timeout: 30_000 }
-    );
-    const parts = stdout.trim().split(' ');
-    const durationSeconds = parseFloat(parts[0]);
-    let uploadDate: Date | null = null;
-    const d = parts[1];
-    if (d && /^\d{8}$/.test(d)) {
-      uploadDate = new Date(parseInt(d.slice(0, 4)), parseInt(d.slice(4, 6)) - 1, parseInt(d.slice(6, 8)));
-    }
-    return { durationSeconds: isNaN(durationSeconds) ? null : durationSeconds, uploadDate };
-  } catch {
-    return { durationSeconds: null, uploadDate: null };
-  }
+function downloadToFile(url: string, destPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const protocol = url.startsWith('https') ? https : http;
+    const timeout = 10 * 60 * 1000; // 10 minutes
+
+    const req = protocol.get(url, { timeout }, (res) => {
+      // Follow redirects (podcast CDNs redirect frequently)
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        downloadToFile(res.headers.location, destPath).then(resolve, reject);
+        return;
+      }
+
+      if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+        res.resume();
+        reject(new Error(`HTTP ${res.statusCode} downloading audio from ${url}`));
+        return;
+      }
+
+      const file = fs.createWriteStream(destPath);
+      res.pipe(file);
+      file.on('finish', () => file.close(() => resolve()));
+      file.on('error', (err) => { fs.unlink(destPath, () => {}); reject(err); });
+    });
+
+    req.on('timeout', () => { req.destroy(); reject(new Error(`Timeout downloading audio from ${url}`)); });
+    req.on('error', reject);
+  });
 }
 
-// Back-compat wrapper for callers that only need duration.
-export async function fetchVideoDurationSeconds(videoId: string): Promise<number | null> {
-  return (await fetchVideoInfo(videoId)).durationSeconds;
-}
+export async function downloadFromUrl(audioUrl: string, episodeId: string): Promise<AudioFile> {
+  // Derive extension from URL, default to .mp3
+  const ext = audioUrl.match(/\.(mp3|m4a|ogg|opus|aac|wav|flac)(\?|$)/i)?.[1] ?? 'mp3';
+  const outputPath = path.join(os.tmpdir(), `podcast-${episodeId}.${ext}`);
 
-export async function downloadAudio(videoId: string): Promise<AudioFile> {
-  const outputPath = path.join(os.tmpdir(), `podcast-${videoId}.m4a`);
-
-  // Clean up any stale file from a previous failed run
   try { fs.unlinkSync(outputPath); } catch {}
 
-  const url = `https://www.youtube.com/watch?v=${videoId}`;
-
-  // Retry with backoff on 429. yt-dlp exits non-zero on 429 and includes it in stderr.
   const maxAttempts = 3;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      await execAsync(
-        `yt-dlp -f "bestaudio[ext=m4a]" --no-playlist --js-runtimes "node:${process.execPath}" -o "${outputPath}" "${url}"`,
-        { timeout: 600_000 }
-      );
+      await downloadToFile(audioUrl, outputPath);
       break;
     } catch (err: any) {
-      const msg: string = err?.stderr ?? err?.message ?? '';
-      const is429 = msg.includes('429') || msg.includes('Too Many Requests');
-      if (is429 && attempt < maxAttempts) {
-        const delaySec = attempt === 1 ? 120 : 300; // 2min, then 5min
-        console.warn(`[audioDownloader] 429 on attempt ${attempt}, retrying in ${delaySec}s`);
-        await sleep(delaySec * 1000);
+      if (attempt < maxAttempts) {
+        console.warn(`[audioDownloader] Download failed (attempt ${attempt}): ${err.message}, retrying in 5s`);
+        await sleep(5_000);
         continue;
       }
       throw err;
@@ -77,7 +70,7 @@ export async function downloadAudio(videoId: string): Promise<AudioFile> {
   }
 
   if (!fs.existsSync(outputPath)) {
-    throw new Error(`yt-dlp completed but output file not found: ${outputPath}`);
+    throw new Error(`Download completed but output file not found: ${outputPath}`);
   }
 
   return {

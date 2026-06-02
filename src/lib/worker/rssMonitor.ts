@@ -1,152 +1,130 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-import { db } from '@/lib/db';
+// lib/worker/rssMonitor.ts
+// Polls followed podcasts for new episodes via Podcast Index API.
+// Replaces the yt-dlp flat-playlist approach — no yt-dlp dependency.
 
-const execFileAsync = promisify(execFile);
+import { db } from '@/lib/db';
+import { getEpisodes } from '@/lib/podcast-index/client';
 
 interface CheckOptions {
   backfillCount?: number;
 }
 
-// Use yt-dlp to list channel videos — bypasses the RSS ~15-item cap.
-// Prints "videoId durationSeconds" per line; filters by min/max duration.
-// Returns up to `count` videos that fall within the length range.
-async function listVideosViaYtdlp(
-  channelUrl: string,
+async function listRecentEpisodes(
+  feedId: number,
   count: number,
   minSecs: number | null,
   maxSecs: number | null
-): Promise<{ videoId: string; publishedAt?: Date }[]> {
-  const playlistEnd = Math.min(count * 4, 500); // over-fetch to account for filtered videos
-  const args: string[] = [
-    '--flat-playlist',
-    '--print', '%(id)s %(duration)s %(timestamp)s',
-    '--playlist-end', String(playlistEnd),
-    '--extractor-args', 'youtube:player_client=ios',
-    '--no-warnings',
-    '--quiet',
-    `${channelUrl}/videos`,
-  ];
+): Promise<{ episodeUrl: string; publishedAt?: Date; externalId: string }[]> {
+  // Over-fetch to account for duration filtering
+  const episodes = await getEpisodes(feedId, Math.min(count * 4, 100));
 
-  let stdout = '';
-  try {
-    ({ stdout } = await execFileAsync('yt-dlp', args, { timeout: 120_000 }));
-  } catch (err: any) {
-    stdout = err.stdout ?? '';
-    if (!stdout.trim()) throw new Error(`yt-dlp failed: ${err.message}`);
-  }
+  const filtered = episodes.filter(ep => {
+    if (!ep.enclosureUrl) return false;
+    if (minSecs !== null && ep.duration > 0 && ep.duration < minSecs) return false;
+    if (maxSecs !== null && ep.duration > 0 && ep.duration > maxSecs) return false;
+    return true;
+  });
 
-  const entries: { videoId: string; publishedAt?: Date }[] = [];
-  for (const line of stdout.split('\n')) {
-    if (entries.length >= count) break;
-
-    const parts = line.trim().split(/\s+/);
-    const videoId = parts[0];
-    if (!videoId || videoId === 'NA') continue;
-
-    const duration = parseFloat(parts[1]);
-    if (isNaN(duration)) continue;
-    if (minSecs !== null && duration < minSecs) continue;
-    if (maxSecs !== null && duration > maxSecs) continue;
-
-    const ts = parseInt(parts[2]);
-    const publishedAt = !isNaN(ts) && ts > 0 ? new Date(ts * 1000) : undefined;
-
-    entries.push({ videoId, publishedAt });
-  }
-
-  return entries;
+  return filtered.slice(0, count).map(ep => ({
+    episodeUrl:  `https://podcastindex.org/podcast/${ep.feedId}/episode/${ep.id}`,
+    externalId:  String(ep.id),
+    publishedAt: ep.datePublished ? new Date(ep.datePublished * 1000) : undefined,
+  }));
 }
 
-export async function checkChannelForNewVideos(
+export async function checkPodcastForNewEpisodes(
   sourceId: string,
   options: CheckOptions = {}
 ): Promise<number> {
   const source = await db.source.findUnique({
     where: { id: sourceId },
-    select: { id: true, name: true, url: true, minDurationSeconds: true, maxDurationSeconds: true, createdAt: true, lastCheckedAt: true },
+    select: {
+      id: true, name: true, url: true,
+      minDurationSeconds: true, maxDurationSeconds: true,
+      lastCheckedAt: true,
+    },
   });
   if (!source) return 0;
 
-  // yt-dlp handles all URL formats: /channel/UC..., /@handle, /c/name
-  const count = options.backfillCount && options.backfillCount > 0 ? options.backfillCount : 15;
-  let videosToEnqueue: { videoId: string; publishedAt?: Date }[];
+  // feedId is stored as the Podcast Index URL: https://podcastindex.org/podcast/<feedId>
+  const feedIdMatch = source.url.match(/podcastindex\.org\/podcast\/(\d+)/);
+  if (!feedIdMatch) {
+    console.warn(`[Monitor] ${source.name}: no feedId in URL "${source.url}", skipping`);
+    return 0;
+  }
+  const feedId = parseInt(feedIdMatch[1], 10);
 
+  const backfillCount = options.backfillCount;
+  const count = backfillCount ?? 15;
+
+  let episodes: { episodeUrl: string; publishedAt?: Date; externalId: string }[];
   try {
-    videosToEnqueue = await listVideosViaYtdlp(
-      source.url,
-      count,
-      source.minDurationSeconds,
-      source.maxDurationSeconds
+    episodes = await listRecentEpisodes(
+      feedId, count,
+      source.minDurationSeconds ?? null,
+      source.maxDurationSeconds ?? null
     );
-    console.log(`[Monitor] ${source.name}: yt-dlp found ${videosToEnqueue.length} videos`);
-  } catch (err) {
-    console.warn(`[Monitor] ${source.name}: yt-dlp failed, skipping:`, err);
+  } catch (err: any) {
+    console.error(`[Monitor] ${source.name}: Podcast Index fetch failed:`, err.message);
     return 0;
   }
 
-  let enqueued = 0;
+  if (episodes.length === 0) {
+    await db.source.update({ where: { id: sourceId }, data: { lastCheckedAt: new Date() } });
+    return 0;
+  }
 
-  // For ongoing monitoring (no backfill), only pick up videos published after this source was added.
-  // Prevents ingesting the channel's entire back-catalogue on every check.
-  const monitoringCutoff = options.backfillCount ? null : (source.lastCheckedAt ?? source.createdAt);
+  // Find which externalIds already exist for this source
+  const existingIds = new Set(
+    (await db.episode.findMany({
+      where: { sourceId, externalId: { in: episodes.map(e => e.externalId) } },
+      select: { externalId: true },
+    })).map(e => e.externalId)
+  );
 
-  for (const { videoId, publishedAt } of videosToEnqueue) {
-    if (monitoringCutoff && (!publishedAt || publishedAt < monitoringCutoff)) continue;
-
-    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-
-    const alreadyIngested = await db.episode.findFirst({
-      where: { externalId: videoId },
-      select: { id: true },
-    });
-    if (alreadyIngested) continue;
-
-    const alreadyQueued = await db.ingestionJob.findFirst({
-      where: { videoUrl: { contains: videoId }, status: { in: ['queued', 'running'] } },
-      select: { id: true },
-    });
-    if (alreadyQueued) continue;
-
-    // Pre-set the publish date from RSS before the job runs so processJob.ts doesn't overwrite it with new Date()
-    if (publishedAt) {
-      await db.episode.upsert({
-        where: { sourceId_externalId: { sourceId: source.id, externalId: videoId } },
-        update: { publishedAt },
-        create: {
-          sourceId: source.id,
-          externalId: videoId,
-          title: `Video ${videoId}`,
-          publishedAt,
-          transcriptStatus: 'pending',
-        },
+  const newEpisodes = backfillCount
+    ? episodes.filter(e => !existingIds.has(e.externalId))
+    : episodes.filter(e => {
+        if (existingIds.has(e.externalId)) return false;
+        // For monitoring (non-backfill), only pick up episodes newer than last check
+        if (source.lastCheckedAt && e.publishedAt && e.publishedAt <= source.lastCheckedAt) return false;
+        return true;
       });
-    }
 
-    await db.ingestionJob.create({ data: { videoUrl, sourceId: source.id, status: 'queued' } });
-    console.log(`[Monitor] Enqueued "${videoId}" from ${source.name}`);
+  let enqueued = 0;
+  for (const ep of newEpisodes) {
+    await db.ingestionJob.create({
+      data: { episodeUrl: ep.episodeUrl, sourceId, status: 'queued' },
+    });
     enqueued++;
   }
 
-  await db.source.update({
-    where: { id: sourceId },
-    data: { lastCheckedAt: new Date() },
-  });
-
+  await db.source.update({ where: { id: sourceId }, data: { lastCheckedAt: new Date() } });
+  if (enqueued > 0) {
+    console.log(`[Monitor] ${source.name}: enqueued ${enqueued} new episode(s)`);
+  }
   return enqueued;
 }
 
+// Alias used by channels API route
+export const checkChannelForNewVideos = checkPodcastForNewEpisodes;
+
 export async function pollAllChannels(): Promise<void> {
+  const now = new Date();
   const sources = await db.source.findMany({
-    where: { platform: 'youtube', following: true },
-    select: { id: true, checkIntervalHours: true, lastCheckedAt: true },
+    where: { following: true },
+    select: { id: true, name: true, checkIntervalHours: true, lastCheckedAt: true },
   });
 
   for (const source of sources) {
     const intervalMs = source.checkIntervalHours * 60 * 60 * 1000;
     const lastChecked = source.lastCheckedAt?.getTime() ?? 0;
-    if (Date.now() - lastChecked >= intervalMs) {
-      await checkChannelForNewVideos(source.id);
+    if (now.getTime() - lastChecked < intervalMs) continue;
+
+    try {
+      await checkPodcastForNewEpisodes(source.id);
+    } catch (err: any) {
+      console.warn(`[Monitor] ${source.name}: check failed:`, err.message);
     }
   }
 }

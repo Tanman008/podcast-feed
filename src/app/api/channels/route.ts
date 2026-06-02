@@ -1,30 +1,31 @@
-// GET  /api/channels — list all monitored channels
-// POST /api/channels — add a channel by URL (with optional backfillDays)
+// GET  /api/channels — list all followed podcasts
+// POST /api/channels — add a podcast by URL/name (with optional backfillCount)
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { resolveChannel } from '@/lib/youtube/channels';
-import { checkChannelForNewVideos } from '@/lib/worker/rssMonitor';
+import { resolvePodcast } from '@/lib/podcast-index/resolver';
+import { getPodcastById } from '@/lib/podcast-index/client';
+import { checkPodcastForNewEpisodes } from '@/lib/worker/rssMonitor';
 
 export async function GET() {
   try {
     const sources = await db.source.findMany({
-      where: { platform: 'youtube', following: true },
+      where: { following: true },
       orderBy: { createdAt: 'desc' },
       include: { _count: { select: { episodes: true } } },
     });
-    const monitorable = sources.filter(s => /youtube\.com\/channel\/UC[\w-]+/.test(s.url));
     return NextResponse.json({
-      channels: monitorable.map(s => ({
-        id: s.id,
-        name: s.name,
-        url: s.url,
-        episodeCount: s._count.episodes,
-        createdAt: s.createdAt,
-        minDurationSeconds: s.minDurationSeconds,
-        maxDurationSeconds: s.maxDurationSeconds,
-        checkIntervalHours: s.checkIntervalHours,
-        lastCheckedAt: s.lastCheckedAt,
+      channels: sources.map(s => ({
+        id:                  s.id,
+        name:                s.name,
+        url:                 s.url,
+        imageUrl:            s.imageUrl,
+        episodeCount:        s._count.episodes,
+        createdAt:           s.createdAt,
+        minDurationSeconds:  s.minDurationSeconds,
+        maxDurationSeconds:  s.maxDurationSeconds,
+        checkIntervalHours:  s.checkIntervalHours,
+        lastCheckedAt:       s.lastCheckedAt,
       })),
     });
   } catch (e: any) {
@@ -39,10 +40,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'url is required' }, { status: 400 });
     }
 
-    const info = await resolveChannel(url.trim());
+    const info = await resolvePodcast(url.trim());
     if (!info) {
       return NextResponse.json(
-        { error: 'Could not resolve channel ID. Try the direct channel URL (youtube.com/channel/UC...).' },
+        { error: 'Could not resolve podcast. Try a Podcast Index URL (podcastindex.org/podcast/...) or RSS feed URL.' },
         { status: 400 }
       );
     }
@@ -54,14 +55,15 @@ export async function POST(req: NextRequest) {
       source = await db.source.update({
         where: { id: existing.id },
         data: {
-          name: info.name,
-          url: info.canonicalUrl,
+          name:      info.name,
+          url:       info.canonicalUrl,
           following: true,
           ...(minDurationSeconds !== undefined && { minDurationSeconds: minDurationSeconds ?? null }),
           ...(maxDurationSeconds !== undefined && { maxDurationSeconds: maxDurationSeconds ?? null }),
         },
       });
     } else {
+      const feed = await getPodcastById(info.feedId).catch(() => null);
       const baseSlug = info.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
       let slug = baseSlug;
       let attempt = 0;
@@ -70,11 +72,12 @@ export async function POST(req: NextRequest) {
       }
       source = await db.source.create({
         data: {
-          name: info.name,
+          name:               info.name,
           slug,
-          sourceType: 'youtube',
-          platform: 'youtube',
-          url: info.canonicalUrl,
+          sourceType:         'podcast',
+          platform:           'podcast_index',
+          url:                info.canonicalUrl,
+          imageUrl:           feed?.image ?? info.imageUrl ?? null,
           minDurationSeconds: minDurationSeconds ?? null,
           maxDurationSeconds: maxDurationSeconds ?? null,
         },
@@ -83,7 +86,7 @@ export async function POST(req: NextRequest) {
 
     // Kick off backfill in background (non-blocking)
     if (backfillCount && backfillCount > 0) {
-      checkChannelForNewVideos(source.id, { backfillCount }).catch(e =>
+      checkPodcastForNewEpisodes(source.id, { backfillCount }).catch(e =>
         console.error('[Channels] Backfill failed:', e)
       );
     }

@@ -5,8 +5,8 @@
 
 import { IngestionJob, TranscriptStatus } from '@prisma/client';
 import { db } from '@/lib/db';
-import { fetchYouTubeMetadata, extractVideoId } from '@/lib/ingestion/youtube';
-import { downloadAudio, fetchVideoInfo } from '@/lib/ingestion/audioDownloader';
+import { fetchEpisodeMetadata } from '@/lib/ingestion/episodeMetadata';
+import { downloadFromUrl } from '@/lib/ingestion/audioDownloader';
 import { transcribeAudio } from '@/lib/ingestion/transcriber';
 import { chunkTranscript } from '@/lib/ingestion/chunker';
 import { embedChunks } from '@/lib/ingestion/embedder';
@@ -29,54 +29,37 @@ async function deleteEpisodeIfExists(episodeId: string): Promise<void> {
 }
 
 export async function processJob(job: IngestionJob): Promise<void> {
-  console.log(`[Job ${job.id}] Starting ingestion of ${job.videoUrl}`);
+  const episodeUrl = (job as any).episodeUrl as string;
+  console.log(`[Job ${job.id}] Starting ingestion of ${episodeUrl}`);
 
   try {
-    const videoId = extractVideoId(job.videoUrl);
-    if (!videoId) {
-      await failJob(job.id, 'Invalid YouTube URL');
-      return;
-    }
-
-    // Reject Shorts submitted via /shorts/ URL — check before spending money on download
-    if (job.videoUrl.includes('/shorts/')) {
-      await failJob(job.id, 'YouTube Shorts are not supported');
-      return;
-    }
-
     // ───────────────────────────────────────────────────────────────────────
     // PASS 1: Persist chunks + embeddings + entities + conviction
     // ───────────────────────────────────────────────────────────────────────
 
-    // 1. Fail fast on duplicate before spending money on audio download
-    const earlyDupCheck = await checkIsDuplicate(videoId, job.sourceId);
+    // 1. Fetch episode metadata from Podcast Index (title, audioUrl, duration, publishedAt)
+    console.log(`[Job ${job.id}] Fetching episode metadata...`);
+    let metadata: Awaited<ReturnType<typeof fetchEpisodeMetadata>>;
+    try {
+      metadata = await fetchEpisodeMetadata(episodeUrl);
+    } catch (err: any) {
+      await failJob(job.id, `Could not resolve episode metadata: ${err.message}`);
+      return;
+    }
+
+    if (!metadata.audioUrl) {
+      await failJob(job.id, 'Episode has no audio URL');
+      return;
+    }
+
+    // 2. Fail fast on duplicate before spending money on transcription
+    const earlyDupCheck = await checkIsDuplicate(metadata.externalId, job.sourceId);
     if (earlyDupCheck.isDuplicate) {
       await failJob(job.id, `Duplicate episode: ${earlyDupCheck.reason}`);
       return;
     }
 
-    // 2. Fetch title (oEmbed, free — no API key needed)
-    console.log(`[Job ${job.id}] Fetching metadata...`);
-    const metadata = await fetchYouTubeMetadata(videoId);
-
-    // 3. Upsert episode immediately so job progress is visible in UI
-    const episode = await db.episode.upsert({
-      where: { sourceId_externalId: { sourceId: job.sourceId, externalId: videoId } },
-      update: { title: metadata.title, transcriptStatus: TranscriptStatus.processing },
-      create: {
-        sourceId: job.sourceId,
-        externalId: videoId,
-        title: metadata.title,
-        thumbnailUrl: metadata.thumbnailUrl,
-        publishedAt: null,
-        transcriptStatus: TranscriptStatus.processing,
-      },
-    });
-
-    await db.ingestionJob.update({ where: { id: job.id }, data: { episodeId: episode.id } });
-    await updateJobProgress(job.id, 5, 0);
-
-    // 4a. Fetch source duration settings and pre-check video length before downloading
+    // 3. Duration pre-check — free, comes from Podcast Index metadata
     const sourceSettings = await db.source.findUnique({
       where: { id: job.sourceId },
       select: { minDurationSeconds: true, maxDurationSeconds: true },
@@ -84,28 +67,38 @@ export async function processJob(job: IngestionJob): Promise<void> {
     const minSecs = sourceSettings?.minDurationSeconds ?? 60;
     const maxSecs = sourceSettings?.maxDurationSeconds ?? null;
 
-    console.log(`[Job ${job.id}] Pre-checking video duration and date...`);
-    const { durationSeconds: preCheckSecs, uploadDate } = await fetchVideoInfo(videoId);
-    if (uploadDate) {
-      await db.episode.update({ where: { id: episode.id }, data: { publishedAt: uploadDate } });
-    }
-
-    if (preCheckSecs !== null) {
-      if (preCheckSecs < minSecs) {
-        await failJob(job.id, `Video too short (${Math.round(preCheckSecs / 60)}m) — below channel minimum of ${Math.round(minSecs / 60)}m`);
-        await deleteEpisodeIfExists(episode.id);
+    if (metadata.durationSeconds !== null) {
+      if (metadata.durationSeconds < minSecs) {
+        await failJob(job.id, `Episode too short (${Math.round(metadata.durationSeconds / 60)}m) — below minimum of ${Math.round(minSecs / 60)}m`);
         return;
       }
-      if (maxSecs !== null && preCheckSecs > maxSecs) {
-        await failJob(job.id, `Video too long (${Math.round(preCheckSecs / 60)}m) — above channel maximum of ${Math.round(maxSecs / 60)}m`);
-        await deleteEpisodeIfExists(episode.id);
+      if (maxSecs !== null && metadata.durationSeconds > maxSecs) {
+        await failJob(job.id, `Episode too long (${Math.round(metadata.durationSeconds / 60)}m) — above maximum of ${Math.round(maxSecs / 60)}m`);
         return;
       }
     }
 
-    // 4b. Download audio via yt-dlp
-    console.log(`[Job ${job.id}] Downloading audio...`);
-    const audio = await downloadAudio(videoId);
+    // 4. Upsert episode so job progress is visible in UI
+    const episode = await db.episode.upsert({
+      where: { sourceId_externalId: { sourceId: job.sourceId, externalId: metadata.externalId } },
+      update: { title: metadata.title, transcriptStatus: TranscriptStatus.processing },
+      create: {
+        sourceId:        job.sourceId,
+        externalId:      metadata.externalId,
+        title:           metadata.title,
+        description:     metadata.description || null,
+        thumbnailUrl:    metadata.thumbnailUrl,
+        publishedAt:     metadata.publishedAt,
+        transcriptStatus: TranscriptStatus.processing,
+      },
+    });
+
+    await db.ingestionJob.update({ where: { id: job.id }, data: { episodeId: episode.id } });
+    await updateJobProgress(job.id, 5, 0);
+
+    // 5. Download audio directly from podcast CDN (no yt-dlp)
+    console.log(`[Job ${job.id}] Downloading audio from ${metadata.audioUrl}`);
+    const audio = await downloadFromUrl(metadata.audioUrl, episode.id);
     await updateJobProgress(job.id, 15, 0);
 
     // 5. Transcribe + diarize via Deepgram
@@ -125,16 +118,16 @@ export async function processJob(job: IngestionJob): Promise<void> {
       return;
     }
 
-    // Post-transcription duration check — safety net in case yt-dlp metadata was unavailable above
+    // Post-transcription duration check — safety net when PI metadata had no duration
     if (durationSeconds < minSecs) {
       const mins = Math.round(durationSeconds / 60);
-      await failJob(job.id, `Video too short (${mins}m) — below channel minimum of ${Math.round(minSecs / 60)}m`);
+      await failJob(job.id, `Episode too short (${mins}m) — below minimum of ${Math.round(minSecs / 60)}m`);
       await deleteEpisodeIfExists(episode.id);
       return;
     }
     if (maxSecs !== null && durationSeconds > maxSecs) {
       const mins = Math.round(durationSeconds / 60);
-      await failJob(job.id, `Video too long (${mins}m) — above channel maximum of ${Math.round(maxSecs / 60)}m`);
+      await failJob(job.id, `Episode too long (${mins}m) — above maximum of ${Math.round(maxSecs / 60)}m`);
       await deleteEpisodeIfExists(episode.id);
       return;
     }

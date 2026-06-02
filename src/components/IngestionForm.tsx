@@ -3,13 +3,13 @@
 import { useState, useEffect } from 'react';
 
 export function IngestionForm() {
-  const [videoUrl, setVideoUrl] = useState('');
+  const [episodeUrl, setEpisodeUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState<'queued' | 'running' | 'completed' | 'failed' | null>(null);
-  const [channelName, setChannelName] = useState<string | null>(null);
-  const [videoTitle, setVideoTitle] = useState<string | null>(null);
+  const [podcastName, setPodcastName] = useState<string | null>(null);
+  const [episodeTitle, setEpisodeTitle] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -27,9 +27,9 @@ export function IngestionForm() {
           setTimeout(() => {
             setJobId(null);
             setProgress(0);
-            setVideoUrl('');
-            setChannelName(null);
-            setVideoTitle(null);
+            setEpisodeUrl('');
+            setPodcastName(null);
+            setEpisodeTitle(null);
             setError(null);
             setStatus(null);
           }, 2000);
@@ -48,10 +48,10 @@ export function IngestionForm() {
     setLoading(true);
 
     try {
-      const res = await fetch('/api/ingest/youtube', {
+      const res = await fetch('/api/ingest/podcast', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ videoUrl }),
+        body: JSON.stringify({ episodeUrl }),
       });
 
       const data = await res.json();
@@ -60,8 +60,8 @@ export function IngestionForm() {
       setJobId(data.jobId);
       setStatus('queued');
       setProgress(0);
-      setChannelName(data.channelName ?? null);
-      setVideoTitle(data.videoTitle ?? null);
+      setPodcastName(data.podcastName ?? null);
+      setEpisodeTitle(data.episodeTitle ?? null);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -73,8 +73,8 @@ export function IngestionForm() {
     return (
       <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-5 space-y-3">
         <h3 className="text-xs font-semibold text-[#888] uppercase tracking-widest">Ingesting…</h3>
-        {videoTitle && <p className="text-xs text-[#ccc] truncate">{videoTitle}</p>}
-        {channelName && <p className="text-[11px] text-[#555]">{channelName}</p>}
+        {episodeTitle && <p className="text-xs text-[#ccc] truncate">{episodeTitle}</p>}
+        {podcastName && <p className="text-[11px] text-[#555]">{podcastName}</p>}
 
         <div>
           <div className="flex justify-between text-[10px] text-[#555] mb-1">
@@ -99,16 +99,16 @@ export function IngestionForm() {
 
   return (
     <form onSubmit={handleSubmit} className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-5 space-y-3">
-      <h3 className="text-xs font-semibold text-[#888] uppercase tracking-widest">Ingest a video</h3>
+      <h3 className="text-xs font-semibold text-[#888] uppercase tracking-widest">Ingest an episode</h3>
       <p className="text-[11px] text-[#444]">
-        Paste any public YouTube URL. Source is detected automatically from the channel.
+        Paste a Podcast Index episode URL or RSS feed URL. Podcast is detected automatically.
       </p>
 
       <input
         type="url"
-        placeholder="https://www.youtube.com/watch?v=..."
-        value={videoUrl}
-        onChange={e => setVideoUrl(e.target.value)}
+        placeholder="https://podcastindex.org/podcast/920666/episode/..."
+        value={episodeUrl}
+        onChange={e => setEpisodeUrl(e.target.value)}
         required
         className="w-full px-3 py-2 bg-[#080808] border border-[#222] rounded-lg text-sm text-white placeholder-[#333] focus:outline-none focus:ring-1 focus:ring-[#C8900A]/40"
       />

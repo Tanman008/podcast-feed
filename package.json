@@ -24,6 +24,7 @@
     "next": "16.2.6",
     "openai": "^4.87.0",
     "p-limit": "^4.0.0",
+    "podcast-index-api": "^2.0.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "youtube-transcript": "^1.0.6"

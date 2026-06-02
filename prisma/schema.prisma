@@ -19,6 +19,7 @@ datasource db {
 
 enum SourceType {
   youtube
+  podcast
   spotify
   apple_podcast
   earnings_call
@@ -99,7 +100,7 @@ model Source {
 model Episode {
   id               String           @id @default(uuid())
   sourceId         String
-  externalId       String           // YouTube video ID, etc.
+  externalId       String           // Podcast Index episode ID, etc.
   title            String
   description      String?
   publishedAt      DateTime?
@@ -286,7 +287,7 @@ model ChunkEntity {
 
 model IngestionJob {
   id           String    @id @default(uuid())
-  videoUrl     String
+  episodeUrl   String
   sourceId     String
   episodeId    String?   // Populated after Episode is created
   status       JobStatus @default(queued)

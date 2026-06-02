@@ -372,7 +372,7 @@ export default function ChannelsPage() {
             <input
               value={url}
               onChange={e => setUrl(e.target.value)}
-              placeholder="https://www.youtube.com/@allin"
+              placeholder="https://podcastindex.org/podcast/920666 or RSS feed URL"
               className="flex-1 px-3 py-2 bg-[#080808] border border-[#222] rounded-lg text-sm text-white placeholder-[#333] focus:outline-none focus:ring-1 focus:ring-[#C8900A]/40"
             />
             <button
@@ -412,7 +412,7 @@ export default function ChannelsPage() {
                   ))}
                 </div>
                 <p className="text-[10px] text-[#444] mt-2">
-                  Counts videos that fall within your length filter. Uses yt-dlp so it can go beyond the 15-video RSS cap.
+                  Counts episodes that fall within your length filter from the Podcast Index feed.
                 </p>
               </div>
 
