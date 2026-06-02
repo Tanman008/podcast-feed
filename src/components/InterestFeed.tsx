@@ -5,12 +5,20 @@ import { TranscriptModal } from './TranscriptModal';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+interface DigestData {
+  todayCount: number;
+  weekCount: number;
+  searchTerm: string;
+  generatedAt: string;
+}
+
 interface Match {
   id: string;
   score: number;
   entityWeight: number;
   quality: string | null;
   createdAt: string;
+  sourceFollowed: boolean;
   claim: {
     id: string;
     highlight: string;
@@ -60,6 +68,7 @@ interface Filters {
   showContext: boolean;
   authorityMin: number;
   authorityMax: number;
+  followedOnly: boolean;
 }
 
 type ViewMode = 'by_interest' | 'by_podcast' | 'combined';
@@ -350,6 +359,18 @@ function Sidebar({
         </button>
       </SidebarSection>
 
+      <SidebarSection label="Source">
+        <button
+          onClick={() => set({ followedOnly: !filters.followedOnly })}
+          className="flex items-center gap-2"
+        >
+          <span className={`w-8 h-4 rounded-full flex items-center transition-colors shrink-0 ${filters.followedOnly ? 'bg-[#22c55e]' : 'bg-[#1e1e1e]'}`}>
+            <span className={`w-3 h-3 rounded-full bg-black ml-0.5 transition-transform ${filters.followedOnly ? 'translate-x-4' : ''}`} />
+          </span>
+          <span className="text-xs text-[#999]">Following only</span>
+        </button>
+      </SidebarSection>
+
       <SidebarSection label="Match quality">
         <div className="flex items-center gap-2 mb-1">
           <input
@@ -547,6 +568,9 @@ function MatchCard({ match, showContext, quality, sameChunkAsPrev }: {
           <span className="text-[#bbb] uppercase tracking-wider shrink-0 font-semibold text-[9px]">
             {match.episode.source?.name ?? 'Unknown'}
           </span>
+          {match.sourceFollowed && (
+            <span className="ml-1.5 shrink-0 w-1.5 h-1.5 rounded-full bg-[#22c55e]" title="Following" />
+          )}
           <span className="text-[#2a2a2a] mx-1.5 shrink-0">/</span>
           <span className="text-[#777] truncate flex-1 min-w-0">{match.episode.title}</span>
           <span className={`text-[8px] text-[#383838] uppercase tracking-widest ml-2 shrink-0 ${MONO}`}>
@@ -639,6 +663,9 @@ function applyFilters(matches: Match[], filters: Filters, buckets: MonthBucket[]
     // ── Quality gate — drop only the lowest quality claims ────────────────
     if (m.quality === 'low') return false;
 
+    // ── Following only — restrict to RSS-monitored sources ────────────────
+    if (filters.followedOnly && !m.sourceFollowed) return false;
+
     // ── Minimum length — too short to be useful to an investor ────────────
     const wordCount = m.claim.highlight.trim().split(/\s+/).length;
     if (wordCount < 20) return false;
@@ -717,6 +744,45 @@ function LoadingSkeleton() {
   );
 }
 
+// ─── Interest Digest Banner ───────────────────────────────────────────────────
+
+function InterestDigest({ interestId }: { interestId: string }) {
+  const [digest, setDigest] = useState<DigestData | null>(null);
+
+  useEffect(() => {
+    fetch(`/api/interests/${interestId}/digest`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d && !d.error) setDigest(d); })
+      .catch(() => {});
+  }, [interestId]);
+
+  if (!digest || (digest.weekCount === 0 && digest.todayCount === 0)) return null;
+
+  return (
+    <div className={`mb-3 pb-3 border-b border-[#141414] ${MONO}`}>
+      <div className="flex items-center gap-2 flex-wrap">
+        {digest.todayCount > 0 && (
+          <span className="text-[10px] text-[#C8900A]">
+            {digest.todayCount} show{digest.todayCount !== 1 ? 's' : ''} published today
+          </span>
+        )}
+        {digest.todayCount > 0 && digest.weekCount > digest.todayCount && (
+          <span className="text-[#2a2a2a]">·</span>
+        )}
+        {digest.weekCount > 0 && (
+          <span className="text-[10px] text-[#555]">
+            {digest.weekCount} active this week
+          </span>
+        )}
+        {digest.weekCount === 0 && digest.todayCount === 0 && (
+          <span className="text-[10px] text-[#333]">no recent coverage</span>
+        )}
+        <span className="text-[10px] text-[#2a2a2a]">· podcast index</span>
+      </div>
+    </div>
+  );
+}
+
 function ByInterestView({ interests, matchesByInterest, filters, buckets, onReindex }: {
   interests: Interest[];
   matchesByInterest: Record<string, Match[]>;
@@ -749,6 +815,8 @@ function ByInterestView({ interests, matchesByInterest, filters, buckets, onRein
                 Re-scan
               </button>
             </div>
+
+            {loaded && <InterestDigest interestId={interest.id} />}
 
             {!loaded ? (
               <LoadingSkeleton />
@@ -829,6 +897,7 @@ export function InterestFeed() {
     showContext: true,
     authorityMin: 0,
     authorityMax: 100,
+    followedOnly: false,
   });
 
   const loadInterests = useCallback(async () => {

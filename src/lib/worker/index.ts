@@ -6,6 +6,7 @@
 import { claimNextJob } from './claim';
 import { processJob } from './processJob';
 import { pollAllChannels } from './rssMonitor';
+import { pollAllSearches } from './searchMonitor';
 import { db } from '@/lib/db';
 
 const POLL_INTERVAL_MS    = 5_000;        // job poll: every 5s
@@ -78,6 +79,12 @@ async function startWorker(): Promise<void> {
   pollAllChannels().catch(e => console.error('[RSS] Initial poll failed:', e));
   setInterval(() => {
     pollAllChannels().catch(e => console.error('[RSS] Poll failed:', e));
+  }, RSS_INTERVAL_MS);
+
+  // Search monitor — run once on start, then on interval
+  pollAllSearches().catch(e => console.error('[Search] Initial poll failed:', e));
+  setInterval(() => {
+    pollAllSearches().catch(e => console.error('[Search] Poll failed:', e));
   }, RSS_INTERVAL_MS);
 
   // Job poll loop

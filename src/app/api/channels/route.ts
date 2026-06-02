@@ -26,6 +26,7 @@ export async function GET() {
         maxDurationSeconds:  s.maxDurationSeconds,
         checkIntervalHours:  s.checkIntervalHours,
         lastCheckedAt:       s.lastCheckedAt,
+        searchQuery:         (s as any).searchQuery ?? null,
       })),
     });
   } catch (e: any) {

@@ -16,7 +16,7 @@ import { checkIsDuplicate } from '@/lib/ingestion/deduplication';
 import { scoreNoveltyBatch } from '@/lib/scoring/novelty';
 import { getOrAssessSpeakerAuthority } from '@/lib/scoring/speakerAuthority';
 import { completeJob, failJob, updateJobProgress } from './claim';
-import { matchEpisodeAgainstAllInterests } from '@/lib/matching/engine';
+import { matchEpisodeAgainstAllInterests, preExtractEpisodeClaims } from '@/lib/matching/engine';
 
 async function deleteEpisodeIfExists(episodeId: string): Promise<void> {
   try {
@@ -318,6 +318,15 @@ export async function processJob(job: IngestionJob): Promise<void> {
     }
 
     await updateJobProgress(job.id, 80, chunks.length, chunks.length);
+
+    // ───────────────────────────────────────────────────────────────────────
+    // PASS 1.5: Dedicated claims extraction for chunks that got no claims
+    // from the combined ingestion pass. Uses the focused claims prompt which
+    // extracts more signal from analytical/strategic content.
+    // ───────────────────────────────────────────────────────────────────────
+
+    console.log(`[Job ${job.id}] Pass 1.5: Backfilling claims for uncovered chunks...`);
+    await preExtractEpisodeClaims(episode.id);
 
     // ───────────────────────────────────────────────────────────────────────
     // PASS 2: Score novelty (chunks + entity links now exist)

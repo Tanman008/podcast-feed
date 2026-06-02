@@ -14,6 +14,7 @@ interface Channel {
   maxDurationSeconds: number | null;
   checkIntervalHours: number;
   lastCheckedAt: string | null;
+  searchQuery: string | null;
 }
 
 interface JobSummary {
@@ -445,10 +446,17 @@ export default function ChannelsPage() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 mb-0.5">
                       <span className="text-sm font-semibold text-white">{ch.name}</span>
+                      {ch.searchQuery
+                        ? <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded border border-[#C8900A]/40 text-[#C8900A]/80">Search</span>
+                        : <span className="w-1.5 h-1.5 rounded-full bg-[#22c55e] shrink-0" title="RSS feed" />
+                      }
                       <span className="text-[11px] text-[#555]">{ch.episodeCount} ep{ch.episodeCount !== 1 ? 's' : ''}</span>
                     </div>
-                    <a href={ch.url} target="_blank" rel="noopener noreferrer"
-                      className="text-[11px] text-[#444] hover:text-[#C8900A] truncate block transition-colors">{ch.url}</a>
+                    {ch.searchQuery
+                      ? <span className="text-[11px] text-[#444]">"{ch.searchQuery}"</span>
+                      : <a href={ch.url} target="_blank" rel="noopener noreferrer"
+                          className="text-[11px] text-[#444] hover:text-[#C8900A] truncate block transition-colors">{ch.url}</a>
+                    }
 
                     <div className="flex items-center gap-3 mt-1.5 text-[11px] text-[#444] flex-wrap">
                       <span>

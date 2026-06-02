@@ -10,19 +10,26 @@ import OpenAI from 'openai';
 import pLimit from 'p-limit';
 import { db } from '@/lib/db';
 import { parseTerm } from './parser';
+import { lookupTicker } from '@/lib/tickers/lookup';
 import { withRetry } from '@/lib/utils/retry';
+import { TOPIC_EXPANSIONS } from './topicExpansions';
 import type { ExtractedClaim } from '@/lib/ingestion/entityExtractor';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const VECTOR_CANDIDATES = 120;
+const VECTOR_CANDIDATES = 200;
 const MAX_CLAIMS_PER_EPISODE = 20;
+const MAX_CLAIMS_PER_SOURCE = 25;
 const SCORE_THRESHOLD = 0.15;
 const CLAIM_CONCURRENCY = 8;
 
 // Pre-filter: only skip chunks that are clearly non-investable (CHITCHAT/sponsor reads).
 // Intentionally broad — let the LLM decide on qualitative claims.
 const SIGNAL_RE = /\$[\d,]+|\d+%|billion|million|revenue|margin|growth|buying|selling|\blong\b|\bshort\b|guidance|forecast|expect|price.?target|valuation|raise|fund|invest|deal|partner|customer|enterprise|product|model|compet|strateg|market|position/i;
+
+// Topic/theme expansions for non-company interests.
+// A "Quantum" interest will match claims containing any of these tokens,
+// with the same entity-weight logic as a direct mention.
 
 // Economic subsidiaries/products per parent company (normalized lowercase).
 // A claim whose primarySubject is one of these is treated as high-exposure
@@ -58,6 +65,7 @@ const CLAIM_TYPE_MULTIPLIERS: Record<string, number> = {
 interface CandidateChunk {
   id: string;
   episodeId: string;
+  sourceId: string;
   importanceScore: number | null;
   forwardLookingScore: number | null;
   authorityScore: number | null;
@@ -73,6 +81,7 @@ interface ChunkMeta {
   episodeId: string;
   chunkIndex: number;
   speakerLabel: string | null;
+  episodeContext?: string; // e.g. "Episode: Satya Nadella — Microsoft's AGI plan. Speaker: Satya Nadella (CEO, Microsoft)"
 }
 
 // ─── Embed ────────────────────────────────────────────────────────────────────
@@ -87,7 +96,7 @@ async function embedQuery(text: string): Promise<number[]> {
 // ─── Vector search ────────────────────────────────────────────────────────────
 
 type VectorRow = {
-  id: string; episodeId: string; similarity: number;
+  id: string; episodeId: string; sourceId: string; similarity: number;
   importanceScore: number | null; forwardLookingScore: number | null;
   authorityScore: number | null; noveltyScore: number | null;
   publishedAt: Date | null; episodeCreatedAt: Date;
@@ -101,6 +110,8 @@ async function vectorSearch(
   const vectorStr = JSON.stringify(embedding);
   if (episodeIds !== null && episodeIds.length === 0) return [];
 
+  // Search all completed episodes — following=true controls the green badge
+  // and feed filter, not corpus inclusion. Everything ingested is searchable.
   return episodeIds
     ? db.$queryRaw<VectorRow[]>`
         SELECT tc.id, tc."episodeId",
@@ -109,12 +120,11 @@ async function vectorSearch(
                tc."relevanceScore"  AS "authorityScore",
                tc."noveltyScore",
                e."publishedAt", e."createdAt" AS "episodeCreatedAt",
+               e."sourceId",
                1 - (tc.embedding <=> ${vectorStr}::vector) AS similarity
         FROM "TranscriptChunk" tc
         JOIN "Episode" e ON e.id = tc."episodeId"
-        JOIN "Source"  s ON s.id = e."sourceId"
         WHERE tc.embedding IS NOT NULL
-          AND s."following" = true
           AND e."transcriptStatus" = 'completed'
           AND tc."episodeId" = ANY(${episodeIds}::text[])
         ORDER BY tc.embedding <=> ${vectorStr}::vector
@@ -127,12 +137,11 @@ async function vectorSearch(
                tc."relevanceScore"  AS "authorityScore",
                tc."noveltyScore",
                e."publishedAt", e."createdAt" AS "episodeCreatedAt",
+               e."sourceId",
                1 - (tc.embedding <=> ${vectorStr}::vector) AS similarity
         FROM "TranscriptChunk" tc
         JOIN "Episode" e ON e.id = tc."episodeId"
-        JOIN "Source"  s ON s.id = e."sourceId"
         WHERE tc.embedding IS NOT NULL
-          AND s."following" = true
           AND e."transcriptStatus" = 'completed'
         ORDER BY tc.embedding <=> ${vectorStr}::vector
         LIMIT ${limit}
@@ -184,8 +193,12 @@ async function extractAllClaims(
 ): Promise<ExtractedClaim[]> {
   if (chunkText.trim().length < 40) return [];
 
-  const prompt = `You are extracting investor-relevant claims from a financial podcast transcript.
+  const contextLine = meta?.episodeContext
+    ? `\nEpisode context: ${meta.episodeContext}\nAttribution guidance: Use speaker context to resolve first-person pronouns. For claims about a company's business (revenue, customers, products, strategy), use that company as primarySubject. For claims about a technology, scientific field, or industry dynamic (e.g. "quantum computing", "AI infrastructure", "cloud market structure"), use the technology or field as primarySubject — even when stated by a company representative.\n`
+    : '';
 
+  const prompt = `You are extracting investor-relevant claims from a financial podcast transcript.
+${contextLine}
 There are TWO distinct tracks. Extract both:
 
 ── SIGNAL CLAIMS (claimType: unit_economics | transaction | growth | guidance | valuation) ──
@@ -206,6 +219,8 @@ specificity = how clearly-defined and arguable the idea is — NOT whether it ha
 completeness = 0.5 for 1 self-contained sentence; 0.6-0.7 for 2 sentences; 0.8+ with full reasoning chain
 
 VERBATIM ONLY: Every word in the highlight MUST appear verbatim in the chunk text. Never write a new sentence. Never paraphrase. Never add "This indicates that..." or any synthesis. Copy and paste only.
+
+SELF-CONTAINED: If the highlight uses a pronoun ("this", "it", "that", "they", "these") whose referent is not explicit within the highlight itself, extend the highlight backward to include the sentence(s) that name the referent. The highlight must be interpretable in isolation — a reader with no context should know what is being claimed.
 
 For each claim:
 {
@@ -354,12 +369,15 @@ function computeEntityWeight(
 ): number {
   if (claim.primarySubject && termTokens.some(t => matchesToken(claim.primarySubject!, t))) return 1.0;
   const mentioned = claim.mentionedEntities.some(e => termTokens.some(t => matchesToken(e, t)));
-  if (mentioned) return claim.claimType === 'transaction' ? 0.8 : 0.3;
-  // Term appears in the highlight text but LLM used a product/person name as subject
-  // (e.g. "Claude" or "Dario" when searching "Anthropic")
-  if (termTokens.some(t => matchesToken(claim.highlight, t))) return 0.2;
+  // mentionedEntities match: raised from 0.3 so it clears the 0.50 entityGate tier
+  // for transactions (0.8) and the 0.50 tier for mentions (0.55). This avoids
+  // topic claims being crushed when the entity appears in supporting context.
+  if (mentioned) return claim.claimType === 'transaction' ? 0.8 : 0.55;
+  // Highlight text match: raised from 0.2 → 0.5 so that topic/theme interests
+  // (e.g. "Quantum") can match claims where the term appears verbatim in the
+  // highlight, even when the LLM attributed the claim to a company subject.
+  if (termTokens.some(t => matchesToken(claim.highlight, t))) return 0.5;
   // Term absent from claim text but chunk passed vector search — soft baseline.
-  // Off-topic guard is the vector threshold, not this field.
   return 0.1;
 }
 
@@ -378,20 +396,31 @@ const MATERIALITY_PATTERNS: { re: RegExp; pts: number }[] = [
   { re: /\b(hundred|thousand)s?\s+of\s+(billion|trillion|million)s?\b/i,               pts: 0.20 },
   { re: /\b(commoditize|commoditized|margin\s+compress|margin\s+collapse|pricing\s+power)\b/i, pts: 0.14 },
   { re: /\b(winner.?take.?all|network\s+effect|moat|lock.?in|switching\s+cost)\b/i,   pts: 0.12 },
+  // Technology milestone patterns — for quantum/AI/biotech interests where signal
+  // is measured in qubits, error rates, model capabilities, or named breakthroughs.
+  { re: /\b(qubits?|logical\s+qubits?|physical\s+qubits?|error\s+correction|coherence)\b/i, pts: 0.18 },
+  { re: /\b(majorana|topological\s+qubit|topological|phase\s+of\s+matter)\b/i,        pts: 0.16 },
+  { re: /\b(transistor\s+moment|existence\s+proof|physics\s+breakthrough|fabrication\s+breakthrough)\b/i, pts: 0.14 },
+  { re: /\b(utility.?scale|fault.?tolerant|error.?rate|fidelity|gate\s+fidelity)\b/i, pts: 0.14 },
+  { re: /(?:by|in|maybe|perhaps|around)\s+'2[5-9]|(?:\s|,)'2[5-9]\s*,\s*'[23]\d/i,    pts: 0.10 }, // short year forms: '27, '28, '29 (no \b — apostrophe is non-word char)
+  { re: /\b(clinical\s+trial|fda\s+approval|efficacy|drug\s+candidate|phase\s+[23])\b/i, pts: 0.18 },
+  { re: /\b(parameter|token|context\s+window|inference|fine.?tun)\b/i,                pts: 0.08 },
 ];
 
 const LARGE_DOLLAR_RE = /\$\s*[\d,.]+\s*[TB]/i;
 const MID_DOLLAR_RE   = /\$\s*[\d,.]+\s*[MB]/i;
 const PCT_METRIC_RE   = /\d+\.?\d*\s*%/;
-const FUTURE_YEAR_RE  = /\b(202[5-9]|203\d)\b/;
+const FUTURE_YEAR_RE  = /\b(202[5-9]|203\d)\b|'2[5-9]\b|'3[0-9]\b/;
 
 function computeFinancialMaterialityScore(highlight: string, numbers: string[]): number {
+  // Check patterns against combined string so numbers like "24 logical qubits" or
+  // "'27" in the numbers array contribute even when not repeated verbatim in highlight.
+  const combined = numbers.join(' ') + ' ' + highlight;
   let score = 0;
   let categoryHits = 0;
   for (const { re, pts } of MATERIALITY_PATTERNS) {
-    if (re.test(highlight)) { score += pts; categoryHits++; }
+    if (re.test(combined)) { score += pts; categoryHits++; }
   }
-  const combined = numbers.join(' ') + ' ' + highlight;
   if (LARGE_DOLLAR_RE.test(combined)) score += 0.30;
   else if (MID_DOLLAR_RE.test(combined)) score += 0.18;
   if (PCT_METRIC_RE.test(combined)) score += 0.10;
@@ -499,6 +528,22 @@ function computePlatitudePenalty(highlight: string): number {
   return Math.min(0.60, hits * 0.20);
 }
 
+// ─── Claim deduplication ─────────────────────────────────────────────────────
+// When an episode has multiple overlapping chunks covering the same quote
+// (e.g. boundary expansion produces 3 versions of the same sentence), we only
+// want the highest-scoring version in the feed.
+
+function wordOverlapRatio(a: string, b: string): number {
+  const aWords = new Set(a.toLowerCase().split(/\s+/).filter(w => w.length > 3));
+  const bWords = new Set(b.toLowerCase().split(/\s+/).filter(w => w.length > 3));
+  if (aWords.size === 0 || bWords.size === 0) return 0;
+  let intersection = 0;
+  for (const w of aWords) { if (bWords.has(w)) intersection++; }
+  // Use min-denominator so that subset claims are caught: a 5-word claim
+  // that is entirely contained in a 20-word claim scores 1.0, not 0.25.
+  return intersection / Math.min(aWords.size, bWords.size);
+}
+
 // ─── Core matching ────────────────────────────────────────────────────────────
 
 export async function matchInterestAgainstEpisodes(
@@ -507,7 +552,39 @@ export async function matchInterestAgainstEpisodes(
   episodeIds: string[] | null
 ): Promise<number> {
   const parsed = parseTerm(term);
-  const embedding = await embedQuery(parsed.embeddingText);
+
+  // Expand tickers to company names: "MSFT" → tokens include "Microsoft"
+  // so getSubsidiaries finds azure/copilot/etc, and entity matching works against
+  // claims that name "Microsoft" rather than the ticker symbol.
+  const expandedTokens = [...parsed.tokens];
+  let expandedEmbedText = parsed.embeddingText;
+  for (const token of parsed.tokens) {
+    const companyName = lookupTicker(token.trim());
+    if (companyName) {
+      const firstName = companyName.split(/\s+/)[0];
+      if (!expandedTokens.includes(companyName)) expandedTokens.push(companyName);
+      if (!expandedTokens.includes(firstName)) expandedTokens.push(firstName);
+      expandedEmbedText = companyName;
+    }
+  }
+
+  // Expand topic/theme terms: "Quantum" → ["quantum computing", "qubit", "majorana", ...]
+  // so entity matching fires on claims that discuss the topic even without naming it explicitly.
+  for (const token of parsed.tokens) {
+    const lower = token.toLowerCase();
+    for (const [key, subs] of Object.entries(TOPIC_EXPANSIONS)) {
+      if (lower === key || lower.startsWith(key + ' ')) {
+        for (const sub of subs) {
+          if (!expandedTokens.includes(sub)) expandedTokens.push(sub);
+        }
+        // Use first expansion as embedding text (more canonical than bare keyword)
+        expandedEmbedText = subs[0];
+        break;
+      }
+    }
+  }
+
+  const embedding = await embedQuery(expandedEmbedText);
 
   const vectorResults = await vectorSearch(embedding, episodeIds, VECTOR_CANDIDATES);
   console.log(`[match "${term}"] vector: ${vectorResults.length} chunks`);
@@ -516,6 +593,7 @@ export async function matchInterestAgainstEpisodes(
   const candidates: CandidateChunk[] = vectorResults.map(r => ({
     id: r.id,
     episodeId: r.episodeId,
+    sourceId: r.sourceId,
     importanceScore: r.importanceScore,
     forwardLookingScore: r.forwardLookingScore,
     authorityScore: r.authorityScore,
@@ -544,11 +622,13 @@ export async function matchInterestAgainstEpisodes(
       completeness: true, gloss: true, numbers: true,
     },
   });
+  // Build highlight lookup for dedup pass below
+  const claimHighlights = new Map<string, string>(claims.map(c => [c.id, c.highlight]));
   console.log(`[match "${term}"] claims loaded (comp>=0.4, spec>=0.2): ${claims.length}`);
 
   // Score each claim
   interface ScoredClaim {
-    claimId: string; chunkId: string; episodeId: string;
+    claimId: string; chunkId: string; episodeId: string; sourceId: string;
     score: number; entityWeight: number; quality: string;
     breakdown: {
       interestMatch: number; materiality: number; economicExposure: number;
@@ -563,7 +643,7 @@ export async function matchInterestAgainstEpisodes(
     const chunk = chunkById.get(claim.chunkId);
     if (!chunk) continue;
 
-    const entityWeight = computeEntityWeight(claim, parsed.tokens);
+    const entityWeight = computeEntityWeight(claim, expandedTokens);
     const numbers      = claim.numbers ?? [];
 
     const interestMatch    = Math.min(1, chunk.combinedScore);
@@ -573,7 +653,7 @@ export async function matchInterestAgainstEpisodes(
     const novelty          = chunk.noveltyScore ?? 0.5;
     const forwardLooking   = computeForwardLookingTextScore(claim.highlight, chunk.forwardLookingScore);
     const specificity      = claim.specificity;
-    const economicExposure = computeEconomicExposureScore(claim, parsed.tokens, materiality);
+    const economicExposure = computeEconomicExposureScore(claim, expandedTokens, materiality);
     const platitudePenalty = computePlatitudePenalty(claim.highlight);
 
     // Entity relevance is now a weighted component (15%), not a multiplier.
@@ -595,7 +675,11 @@ export async function matchInterestAgainstEpisodes(
     // Prevents high-quality claims about unrelated topics from surfacing.
     // economicExposure handles subsidiaries (GitHub → Microsoft), so this doesn't break those cases.
     const entityRelevance = Math.max(entityWeight, economicExposure);
-    const entityGate = entityRelevance > 0.05 ? 1.0 : 0.35;
+    // Graduated gate: entity must be central to the claim, not just semantically adjacent.
+    // - >= 0.50: entity is primary subject OR subsidiary/topic term as primary/mentioned → full score
+    // - >= 0.25: entity appears in highlight text → 60% (raised from 0.30 to catch borderline topic matches)
+    // - < 0.25: semantic-only match → suppressed to near zero
+    const entityGate = entityRelevance >= 0.50 ? 1.0 : entityRelevance >= 0.25 ? 0.60 : 0.10;
     const score = investmentScore * claimTypeMultiplier * (1 - platitudePenalty * 0.5) * relevanceGate * entityGate;
 
     const ideaTypes = new Set(['thesis', 'competitive', 'position']);
@@ -604,7 +688,7 @@ export async function matchInterestAgainstEpisodes(
       : (claim.completeness >= 0.5 ? 'high' : 'low');
 
     scoredClaims.push({
-      claimId: claim.id, chunkId: claim.chunkId, episodeId: chunk.episodeId,
+      claimId: claim.id, chunkId: claim.chunkId, episodeId: chunk.episodeId, sourceId: chunk.sourceId,
       score, entityWeight, quality,
       breakdown: {
         interestMatch, materiality, economicExposure, claimQuality, novelty,
@@ -640,8 +724,42 @@ export async function matchInterestAgainstEpisodes(
     toWrite.push(...list.slice(0, MAX_CLAIMS_PER_EPISODE));
   }
 
+  // Per-source cap — prevents any single podcast from dominating when many episodes are ingested.
+  // Sort globally by score so each source keeps its best claims across episodes.
+  toWrite.sort((a, b) => b.score - a.score);
+  const perSourceCount: Record<string, number> = {};
+  const capped = toWrite.filter(sc => {
+    const n = perSourceCount[sc.sourceId] ?? 0;
+    if (n >= MAX_CLAIMS_PER_SOURCE) return false;
+    perSourceCount[sc.sourceId] = n + 1;
+    return true;
+  });
+
+  // Deduplicate near-identical claims (same episode, >70% word overlap) before writing.
+  // Keeps only the highest-scoring version when boundary expansion produces
+  // multiple overlapping highlights for the same underlying quote.
+  const writtenHighlightsByEpisode = new Map<string, string[]>();
+  // Per-primarySubject cap: prevents a single company/topic from dominating the feed.
+  // E.g. limit "OpenAI" claims in an MSFT feed to avoid the Microsoft-OpenAI news
+  // overwhelming direct MSFT signals.
+  const MAX_CLAIMS_PER_SUBJECT = 3;
+  const perSubjectCount: Record<string, number> = {};
+
   let written = 0;
-  for (const sc of toWrite) {
+  for (const sc of capped) {
+    const highlight = claimHighlights.get(sc.claimId) ?? '';
+    const prior = writtenHighlightsByEpisode.get(sc.episodeId) ?? [];
+    if (prior.some(h => wordOverlapRatio(h, highlight) >= 0.70)) continue;
+
+    // Subject cap: find the claim's primarySubject from the loaded claims array
+    const claimObj = claims.find(c => c.id === sc.claimId);
+    const subject = (claimObj?.primarySubject ?? '').toLowerCase().trim();
+    if (subject) {
+      const subjectHits = perSubjectCount[subject] ?? 0;
+      if (subjectHits >= MAX_CLAIMS_PER_SUBJECT) continue;
+      perSubjectCount[subject] = subjectHits + 1;
+    }
+
     await db.interestMatch.upsert({
       where: { interestId_claimId: { interestId, claimId: sc.claimId } },
       update: { score: sc.score, entityWeight: sc.entityWeight, quality: sc.quality },
@@ -655,6 +773,8 @@ export async function matchInterestAgainstEpisodes(
         quality: sc.quality,
       },
     });
+    prior.push(highlight);
+    writtenHighlightsByEpisode.set(sc.episodeId, prior);
     written++;
   }
 
@@ -672,11 +792,23 @@ export async function backfillInterest(interestId: string, term: string): Promis
 // is fast (DB reads only, no LLM). Idempotent — skips chunks already extracted.
 
 export async function preExtractEpisodeClaims(episodeId: string): Promise<number> {
-  const chunks = await db.transcriptChunk.findMany({
-    where: { episodeId },
-    select: { id: true, text: true, chunkIndex: true, speakerLabel: true },
-  });
+  const [chunks, episode] = await Promise.all([
+    db.transcriptChunk.findMany({
+      where: { episodeId },
+      select: { id: true, text: true, chunkIndex: true, speakerLabel: true, speakerName: true },
+    }),
+    db.episode.findUnique({
+      where: { id: episodeId },
+      select: { title: true, source: { select: { name: true } } },
+    }),
+  ]);
   if (chunks.length === 0) return 0;
+
+  // Build episode context string so the LLM can resolve "we"/"our" references
+  const uniqueSpeakers = [...new Set(chunks.map(c => c.speakerName).filter(Boolean))];
+  const episodeContext = episode
+    ? `Episode: "${episode.title}" (${episode.source?.name ?? 'unknown podcast'}).${uniqueSpeakers.length > 0 ? ` Speakers: ${uniqueSpeakers.join(', ')}.` : ''}`
+    : undefined;
 
   // Skip chunks that already have claims
   const existingChunkIds = new Set(
@@ -695,6 +827,7 @@ export async function preExtractEpisodeClaims(episodeId: string): Promise<number
       episodeId,
       chunkIndex: c.chunkIndex,
       speakerLabel: c.speakerLabel ?? null,
+      episodeContext,
     })))
   );
 

@@ -1,6 +1,8 @@
-// POST /api/channels/[sourceId]/check — manually trigger a feed check
+// POST /api/channels/[sourceId]/check — manually trigger a feed check (RSS or search)
 import { NextRequest, NextResponse } from 'next/server';
+import { db } from '@/lib/db';
 import { checkChannelForNewVideos } from '@/lib/worker/rssMonitor';
+import { checkSearchForNewEpisodes } from '@/lib/worker/searchMonitor';
 
 export async function POST(
   req: NextRequest,
@@ -11,7 +13,15 @@ export async function POST(
   const backfillCount: number | undefined = body.backfillCount;
 
   try {
-    const enqueued = await checkChannelForNewVideos(sourceId, { backfillCount });
+    const source = await db.source.findUnique({
+      where: { id: sourceId },
+      select: { sourceType: true },
+    });
+
+    const enqueued = source?.sourceType === 'search'
+      ? await checkSearchForNewEpisodes(sourceId)
+      : await checkChannelForNewVideos(sourceId, { backfillCount });
+
     return NextResponse.json({ enqueued });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });

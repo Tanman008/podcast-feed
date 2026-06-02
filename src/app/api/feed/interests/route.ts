@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
       skip: offset,
       include: {
         episode: {
-          include: { source: { select: { name: true, platform: true } } },
+          include: { source: { select: { name: true, platform: true, feedUrl: true } } },
         },
         chunk: {
           select: {
@@ -50,6 +50,7 @@ export async function GET(req: NextRequest) {
       entityWeight: m.entityWeight,
       quality: m.quality ?? null,
       createdAt: m.createdAt,
+      sourceFollowed: !!(m.episode.source as any)?.feedUrl,
       claim: {
         id: m.claim.id,
         highlight: m.claim.highlight,
