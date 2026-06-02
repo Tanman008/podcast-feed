@@ -47,12 +47,12 @@ function timeAgo(iso: string | null): string {
 }
 
 const BACKFILL_OPTIONS = [
-  { label: 'New only',   count: 0 },
-  { label: '5 videos',   count: 5 },
-  { label: '10 videos',  count: 10 },
-  { label: '25 videos',  count: 25 },
-  { label: '50 videos',  count: 50 },
-  { label: '100 videos', count: 100 },
+  { label: 'New only',      count: 0 },
+  { label: '5 episodes',   count: 5 },
+  { label: '10 episodes',  count: 10 },
+  { label: '25 episodes',  count: 25 },
+  { label: '50 episodes',  count: 50 },
+  { label: '100 episodes', count: 100 },
 ];
 
 const INTERVAL_OPTIONS = [
@@ -167,13 +167,13 @@ function ChannelSettings({ channel, onSaved }: { channel: Channel; onSaved: () =
   return (
     <div className="mt-3 pt-3 border-t border-[#1e1e1e] space-y-4">
       <div>
-        <div className="text-[10px] text-[#666] uppercase tracking-widest mb-2">Video length filter</div>
+        <div className="text-[10px] text-[#666] uppercase tracking-widest mb-2">Episode length filter</div>
         <div className="flex gap-4 flex-wrap">
           <DurationField label="Minimum" valueMins={minMins} onChange={setMinMins} allowNull={false} />
           <DurationField label="Maximum" valueMins={maxMins} onChange={setMaxMins} allowNull nullLabel="No max" />
         </div>
         <div className="text-[10px] text-[#444] mt-1">
-          Videos outside this range are skipped. 2 min minimum filters Shorts.
+          Episodes outside this range are skipped.
         </div>
       </div>
 
@@ -309,7 +309,7 @@ export default function ChannelsPage() {
       const res = await fetch(`/api/channels/${channel.id}/check`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      const msg = data.enqueued === 0 ? 'Up to date' : `${data.enqueued} new video${data.enqueued !== 1 ? 's' : ''} queued`;
+      const msg = data.enqueued === 0 ? 'Up to date' : `${data.enqueued} new episode${data.enqueued !== 1 ? 's' : ''} queued`;
       setCheckResult(r => ({ ...r, [channel.id]: msg }));
       await load();
       if (data.enqueued > 0) startPolling(channel.id);
@@ -348,7 +348,7 @@ export default function ChannelsPage() {
           <div>
             <h1 className="text-xl font-bold text-white tracking-tight">Channels</h1>
             <p className="text-xs text-[#666] mt-1">
-              Follow YouTube channels. Configure length filters and check frequency per channel.
+              Follow podcasts. Configure episode length filters and check frequency per podcast.
             </p>
           </div>
           <div className="flex gap-5 text-xs">
@@ -366,7 +366,7 @@ export default function ChannelsPage() {
         {/* Add channel */}
         <form onSubmit={handleAdd} className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-5">
           <h2 className="text-xs font-semibold text-[#888] mb-1 uppercase tracking-widest">Follow a channel</h2>
-          <p className="text-[11px] text-[#444] mb-3">Paste any YouTube channel URL — handle, custom URL, or direct channel link.</p>
+          <p className="text-[11px] text-[#444] mb-3">Paste a Podcast Index URL, RSS feed URL, or podcast name to follow.</p>
 
           <div className="flex gap-2 mb-3">
             <input
@@ -394,7 +394,7 @@ export default function ChannelsPage() {
           {showAddOptions && (
             <div className="border border-[#1e1e1e] rounded-lg p-4 space-y-4 bg-[#080808]">
               <div>
-                <div className="text-[10px] text-[#666] uppercase tracking-widest mb-2">Queue existing videos</div>
+                <div className="text-[10px] text-[#666] uppercase tracking-widest mb-2">Queue existing episodes</div>
                 <div className="flex flex-wrap gap-1.5">
                   {BACKFILL_OPTIONS.map(opt => (
                     <button
@@ -417,7 +417,7 @@ export default function ChannelsPage() {
               </div>
 
               <div>
-                <div className="text-[10px] text-[#666] uppercase tracking-widest mb-2">Video length filter</div>
+                <div className="text-[10px] text-[#666] uppercase tracking-widest mb-2">Episode length filter</div>
                 <div className="flex gap-4 flex-wrap">
                   <DurationField label="Minimum" valueMins={addMinMins} onChange={setAddMinMins} allowNull={false} />
                   <DurationField label="Maximum" valueMins={addMaxMins} onChange={setAddMaxMins} allowNull nullLabel="No max" />
@@ -429,7 +429,7 @@ export default function ChannelsPage() {
           {addError && <p className="text-xs text-red-400 mt-2">{addError}</p>}
         </form>
 
-        {/* Ingest a single video */}
+        {/* Ingest a single episode */}
         <IngestionForm />
 
         </div>{/* end top row */}
@@ -508,7 +508,7 @@ export default function ChannelsPage() {
                     <div className="flex items-center justify-between mb-1.5 text-[10px]">
                       <span className={`text-[#666] ${jobStatus[ch.id].active ? 'animate-pulse' : ''}`}>
                         {jobStatus[ch.id].active
-                          ? `${jobStatus[ch.id].completed} / ${jobStatus[ch.id].total} videos processed`
+                          ? `${jobStatus[ch.id].completed} / ${jobStatus[ch.id].total} episodes processed`
                           : `${jobStatus[ch.id].completed} / ${jobStatus[ch.id].total} complete`}
                         {jobStatus[ch.id].running > 0 && (
                           <span className="ml-1.5 text-[#C8900A]">· {jobStatus[ch.id].running} running</span>
