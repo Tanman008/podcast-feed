@@ -19,6 +19,7 @@ export function IngestionForm() {
 
   // ── Search mode state ───────────────────────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState('');
+  const [sinceMonths, setSinceMonths] = useState<number | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchResult, setSearchResult] = useState<{
     sourceName: string; queued: number; expansion: { queries: string[] };
@@ -88,7 +89,7 @@ export function IngestionForm() {
       const res = await fetch('/api/ingest/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: searchQuery.trim() }),
+        body: JSON.stringify({ query: searchQuery.trim(), sinceMonths }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Search failed');
@@ -177,6 +178,31 @@ export function IngestionForm() {
             required
             className="w-full px-3 py-2 bg-[#080808] border border-[#222] rounded-lg text-sm text-white placeholder-[#333] focus:outline-none focus:ring-1 focus:ring-[#C8900A]/40"
           />
+          <div>
+            <div className="text-[9px] text-[#444] uppercase tracking-widest mb-1.5">Episodes from</div>
+            <div className="flex flex-wrap gap-1">
+              {([
+                [null,  'All time'],
+                [6,     '6 mo'],
+                [12,    '1 yr'],
+                [24,    '2 yr'],
+                [60,    '5 yr'],
+              ] as [number | null, string][]).map(([months, label]) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => setSinceMonths(months)}
+                  className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
+                    sinceMonths === months
+                      ? 'bg-[#C8900A] border-[#C8900A] text-black font-bold'
+                      : 'border-[#232323] bg-[#111] text-[#555] hover:border-[#C8900A]/50 hover:text-[#C8900A]'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
           {searchError && <p className="text-[11px] text-red-400">{searchError}</p>}
           {searchResult && (
             <div className="text-[11px] text-emerald-400 space-y-0.5">

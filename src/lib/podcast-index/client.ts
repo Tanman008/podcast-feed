@@ -67,6 +67,34 @@ export async function searchEpisodesByPerson(name: string): Promise<PIEpisode[]>
   return (data?.items ?? []).map(normalizeEpisode);
 }
 
+export async function getPodcastByItunesId(itunesId: number): Promise<PIFeed | null> {
+  const data = await piGet('podcasts/byitunesid', { id: itunesId });
+  return data?.feed ? normalizeFeed(data.feed) : null;
+}
+
+export async function searchItunesEpisodes(term: string, limit = 10): Promise<ItunesEpisode[]> {
+  const qs  = new URLSearchParams({ term, media: 'podcast', entity: 'podcastEpisode', limit: String(limit) }).toString();
+  const res = await fetch(`https://itunes.apple.com/search?${qs}`, {
+    headers: { 'User-Agent': 'PodcastFeedApp/1.0' },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) throw new Error(`iTunes API ${res.status}`);
+  const data = await res.json();
+  return (data.results ?? []).filter((r: any) => r.kind === 'podcast-episode' && r.episodeUrl);
+}
+
+export interface ItunesEpisode {
+  trackId:         number;
+  collectionId:    number;
+  collectionName:  string;
+  trackName:       string;
+  episodeUrl:      string;
+  releaseDate:     string;
+  trackTimeMillis: number;
+  artworkUrl600?:  string;
+  description?:    string;
+}
+
 function normalizeFeed(f: any): PIFeed {
   return {
     id:          f.id,

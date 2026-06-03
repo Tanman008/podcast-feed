@@ -52,17 +52,21 @@ async function upsertSearchSource(entityName: string, query: string): Promise<{ 
 
 export async function POST(req: NextRequest) {
   try {
-    const { query } = await req.json();
+    const { query, sinceMonths } = await req.json();
     if (!query?.trim()) {
       return NextResponse.json({ error: 'query is required' }, { status: 400 });
     }
+
+    const sinceTimestamp = sinceMonths
+      ? Math.floor(Date.now() / 1000) - sinceMonths * 30 * 24 * 3600
+      : undefined;
 
     const expansion = await expandSearchTerm(query.trim());
     console.log(`[Search] "${query}" → ${expansion.entityName} (${expansion.inputType}): ${expansion.queries.join(', ')}`);
 
     const source = await upsertSearchSource(expansion.entityName, query.trim());
 
-    const episodes = await fetchSearchEpisodes(expansion, 10);
+    const episodes = await fetchSearchEpisodes(expansion, 20, sinceTimestamp);
     if (episodes.length === 0) {
       return NextResponse.json({
         sourceId:   source.id,

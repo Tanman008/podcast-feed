@@ -23,7 +23,7 @@ export async function checkSearchForNewEpisodes(sourceId: string): Promise<numbe
 
   let episodes;
   try {
-    episodes = await fetchSearchEpisodes(expansion, 10);
+    episodes = await fetchSearchEpisodes(expansion, 20);
   } catch (err: any) {
     console.error(`[SearchMonitor] ${source.name}: fetch failed:`, err.message);
     return 0;
