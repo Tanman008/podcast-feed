@@ -7,11 +7,14 @@ import { searchPodcasts, getEpisodes, getPodcastByItunesId, searchItunesEpisodes
 import type { PIEpisode } from '@/lib/podcast-index/types';
 import type { SearchExpansion } from './searchExpander';
 
-async function fetchPersonEpisodes(personName: string): Promise<PIEpisode[]> {
+async function fetchPersonEpisodes(personName: string, company?: string): Promise<PIEpisode[]> {
   const AI_FARM_RE = /biography\s+flash|quiet\.\s*please|inception\s+point\s+ai/i;
   const nameTokens = personName.toLowerCase().split(/\s+/);
 
-  const itunesEps = await searchItunesEpisodes(personName, 20).catch(() => []);
+  // When searching for a C-suite executive, append the company name so iTunes
+  // disambiguates. "Brian Smith Coca-Cola" avoids returning every Brian Smith in podcasting.
+  const searchQuery = company ? `${personName} ${company}` : personName;
+  const itunesEps = await searchItunesEpisodes(searchQuery, 20).catch(() => []);
 
   // Resolve collectionId → PI feed, then fetch PI episodes to get accurate datePublished.
   // iTunes releaseDate can reflect today's date when Apple normalizes/updates episodes.
@@ -44,7 +47,8 @@ async function fetchPersonEpisodes(personName: string): Promise<PIEpisode[]> {
     if (seen.has(ep.trackId)) continue;
     seen.add(ep.trackId);
     if (AI_FARM_RE.test(ep.collectionName ?? '')) continue;
-    if (!nameTokens.some(tok => ep.trackName.toLowerCase().includes(tok))) continue;
+    // Require ALL name tokens in the title — prevents "Brian Lehrer" matching for "Brian Smith"
+    if (!nameTokens.every(tok => ep.trackName.toLowerCase().includes(tok))) continue;
 
     const feed   = feedByCollectionId.get(ep.collectionId);
     const piEp   = piEpByUrl.get(ep.episodeUrl);   // match by audio URL
@@ -119,7 +123,7 @@ export async function fetchSearchEpisodes(
 
   const [feedEpisodes, ...peopleResults] = await Promise.all([
     fetchByFeedTerms(feedTerms, expansion.entityName, maxTotal),
-    ...people.map(name => fetchPersonEpisodes(name)),
+    ...people.map(name => fetchPersonEpisodes(name, expansion.entityName)),
   ]);
 
   // Merge, dedup by episode id, sort by recency
