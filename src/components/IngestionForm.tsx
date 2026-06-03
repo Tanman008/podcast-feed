@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 
 type Mode = 'url' | 'search';
 
-export function IngestionForm() {
+export function IngestionForm({ onSuccess }: { onSuccess?: () => void } = {}) {
   const [mode, setMode] = useState<Mode>('url');
 
   // ── URL mode state ──────────────────────────────────────────────────────────
@@ -95,6 +95,7 @@ export function IngestionForm() {
       if (!res.ok) throw new Error(data.error || 'Search failed');
       setSearchResult(data);
       setSearchQuery('');
+      onSuccess?.();
     } catch (err: any) {
       setSearchError(err.message);
     } finally {

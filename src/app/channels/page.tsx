@@ -431,7 +431,7 @@ export default function ChannelsPage() {
         </form>
 
         {/* Ingest a single episode */}
-        <IngestionForm />
+        <IngestionForm onSuccess={load} />
 
         </div>{/* end top row */}
 
