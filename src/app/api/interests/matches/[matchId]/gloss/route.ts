@@ -22,6 +22,7 @@ export async function POST(
   });
 
   if (!match) return NextResponse.json({ error: 'Match not found' }, { status: 404 });
+  if (!match.claim) return NextResponse.json({ gloss: null });
 
   // Return cached result ('' = tried but no gloss; non-empty = real gloss)
   if (match.claim.gloss !== null) {

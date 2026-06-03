@@ -44,41 +44,45 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     total,
-    matches: matches.map(m => ({
-      id: m.id,
-      score: m.score,
-      entityWeight: m.entityWeight,
-      quality: m.quality ?? null,
-      createdAt: m.createdAt,
-      sourceFollowed: !!(m.episode.source as any)?.feedUrl,
-      claim: {
-        id: m.claim.id,
-        highlight: m.claim.highlight,
-        primarySubject: m.claim.primarySubject ?? null,
-        mentionedEntities: m.claim.mentionedEntities,
-        claimType: m.claim.claimType,
-        specificity: m.claim.specificity,
-        completeness: m.claim.completeness,
-        gloss: m.claim.gloss ?? null,
-        numbers: m.claim.numbers,
-      },
-      episode: {
-        id: m.episode.id,
-        externalId: m.episode.externalId,
-        title: m.episode.title,
-        publishedAt: m.episode.publishedAt,
-        source: m.episode.source,
-      },
-      chunk: {
-        id: m.chunk.id,
-        startTimeSeconds: m.chunk.startTimeSeconds,
-        endTimeSeconds: m.chunk.endTimeSeconds,
-        text: m.chunk.text,
-        speakerLabel: m.chunk.speakerLabel ?? null,
-        speakerName: m.chunk.speakerName ?? null,
-        authorityScore: m.chunk.relevanceScore ?? null,
-        keyPhrase: m.chunk.keyPhrase ?? null,
-      },
-    })),
+    matches: matches.flatMap(m => {
+      if (!m.claim) return [];
+      const claim = m.claim;
+      return [{
+        id: m.id,
+        score: m.score,
+        entityWeight: m.entityWeight,
+        quality: m.quality ?? null,
+        createdAt: m.createdAt,
+        sourceFollowed: !!(m.episode.source as any)?.feedUrl,
+        claim: {
+          id: claim.id,
+          highlight: claim.highlight,
+          primarySubject: claim.primarySubject ?? null,
+          mentionedEntities: claim.mentionedEntities,
+          claimType: claim.claimType,
+          specificity: claim.specificity,
+          completeness: claim.completeness,
+          gloss: claim.gloss ?? null,
+          numbers: claim.numbers,
+        },
+        episode: {
+          id: m.episode.id,
+          externalId: m.episode.externalId,
+          title: m.episode.title,
+          publishedAt: m.episode.publishedAt,
+          source: m.episode.source,
+        },
+        chunk: {
+          id: m.chunk.id,
+          startTimeSeconds: m.chunk.startTimeSeconds,
+          endTimeSeconds: m.chunk.endTimeSeconds,
+          text: m.chunk.text,
+          speakerLabel: m.chunk.speakerLabel ?? null,
+          speakerName: m.chunk.speakerName ?? null,
+          authorityScore: m.chunk.relevanceScore ?? null,
+          keyPhrase: m.chunk.keyPhrase ?? null,
+        },
+      }];
+    }),
   });
 }
