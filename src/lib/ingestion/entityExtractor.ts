@@ -116,6 +116,7 @@ export async function analyzeChunk(
   options?: {
     useCache?: boolean;
     cachedEntities?: Map<string, ExtractedEntity>;
+    langSuffix?: string;
   }
 ): Promise<EntityExtractionResult> {
   if (options?.useCache && options?.cachedEntities) {
@@ -123,7 +124,8 @@ export async function analyzeChunk(
   }
 
   return withRetry(async () => {
-    const prompt = ENTITY_EXTRACTION_PROMPT.replace('{transcript}', chunk.text || chunk.cleanedText);
+    const prompt = ENTITY_EXTRACTION_PROMPT.replace('{transcript}', chunk.text || chunk.cleanedText)
+      + (options?.langSuffix ?? '');
 
     const response = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
@@ -193,22 +195,45 @@ export async function analyzeChunk(
   }, { maxAttempts: 3, baseDelayMs: 1000, maxDelayMs: 30000 });
 }
 
+export async function detectLanguage(text: string): Promise<string> {
+  try {
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: `What language is this text? Reply with ONLY the language name in English (e.g. "English", "German", "Spanish", "Mandarin").\n\n"${text.slice(0, 300)}"` }],
+      max_tokens: 5,
+      temperature: 0,
+    });
+    return res.choices[0]?.message?.content?.trim() ?? 'English';
+  } catch {
+    return 'English';
+  }
+}
+
+const TRANSLATION_SUFFIX = (lang: string) => `
+
+LANGUAGE: This transcript is in ${lang}. All output fields (highlight, keyQuote, keyPhrase, primarySubject, mentionedEntities, gloss, numbers) MUST be written in English. Translate highlights to natural, accurate English — the VERBATIM rule does not apply to non-English source text. Preserve all numbers and proper nouns exactly.`;
+
 export async function analyzeChunksBatch(
   chunks: RawChunk[],
   options?: {
     concurrency?: number;
     useCache?: boolean;
     cachedEntities?: Map<string, ExtractedEntity>;
+    sourceLanguage?: string;
   }
 ): Promise<EntityExtractionResult[]> {
   const concurrency = options?.concurrency ?? OPTIMIZATION_CONFIG.LLM_CONCURRENCY;
   const limiter = pLimit(concurrency);
+  const langSuffix = options?.sourceLanguage && options.sourceLanguage.toLowerCase() !== 'english'
+    ? TRANSLATION_SUFFIX(options.sourceLanguage)
+    : '';
 
   return Promise.all(
     chunks.map(chunk =>
       limiter(() => analyzeChunk(chunk, {
         useCache: options?.useCache,
         cachedEntities: options?.cachedEntities,
+        langSuffix,
       }))
     )
   );

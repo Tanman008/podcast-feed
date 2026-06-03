@@ -81,7 +81,8 @@ interface ChunkMeta {
   episodeId: string;
   chunkIndex: number;
   speakerLabel: string | null;
-  episodeContext?: string; // e.g. "Episode: Satya Nadella — Microsoft's AGI plan. Speaker: Satya Nadella (CEO, Microsoft)"
+  episodeContext?: string;
+  sourceLanguage?: string;  // e.g. "German" — triggers translation instruction in prompt
 }
 
 // ─── Embed ────────────────────────────────────────────────────────────────────
@@ -197,8 +198,12 @@ async function extractAllClaims(
     ? `\nEpisode context: ${meta.episodeContext}\nAttribution guidance: Use speaker context to resolve first-person pronouns. For claims about a company's business (revenue, customers, products, strategy), use that company as primarySubject. For claims about a technology, scientific field, or industry dynamic (e.g. "quantum computing", "AI infrastructure", "cloud market structure"), use the technology or field as primarySubject — even when stated by a company representative.\n`
     : '';
 
+  const langLine = meta?.sourceLanguage && meta.sourceLanguage.toLowerCase() !== 'english'
+    ? `\nLANGUAGE: This transcript is in ${meta.sourceLanguage}. Write ALL output fields in English. Translate highlights to natural, accurate English — the VERBATIM rule does not apply. Preserve numbers and proper nouns exactly.\n`
+    : '';
+
   const prompt = `You are extracting investor-relevant claims from a financial podcast transcript.
-${contextLine}
+${contextLine}${langLine}
 There are TWO distinct tracks. Extract both:
 
 ── SIGNAL CLAIMS (claimType: unit_economics | transaction | growth | guidance | valuation) ──
@@ -791,7 +796,7 @@ export async function backfillInterest(interestId: string, term: string): Promis
 // Called at the end of ingestion. Decomposes all chunks into Claims so matching
 // is fast (DB reads only, no LLM). Idempotent — skips chunks already extracted.
 
-export async function preExtractEpisodeClaims(episodeId: string): Promise<number> {
+export async function preExtractEpisodeClaims(episodeId: string, sourceLanguage?: string): Promise<number> {
   const [chunks, episode] = await Promise.all([
     db.transcriptChunk.findMany({
       where: { episodeId },
@@ -828,6 +833,7 @@ export async function preExtractEpisodeClaims(episodeId: string): Promise<number
       chunkIndex: c.chunkIndex,
       speakerLabel: c.speakerLabel ?? null,
       episodeContext,
+      sourceLanguage,
     })))
   );
 

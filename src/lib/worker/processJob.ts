@@ -10,7 +10,7 @@ import { downloadFromUrl } from '@/lib/ingestion/audioDownloader';
 import { transcribeAudio } from '@/lib/ingestion/transcriber';
 import { chunkTranscript } from '@/lib/ingestion/chunker';
 import { embedChunks } from '@/lib/ingestion/embedder';
-import { analyzeChunksBatch } from '@/lib/ingestion/entityExtractor';
+import { analyzeChunksBatch, detectLanguage } from '@/lib/ingestion/entityExtractor';
 import { identifySpeakers } from '@/lib/ingestion/speakerIdentifier';
 import { checkIsDuplicate } from '@/lib/ingestion/deduplication';
 import { scoreNoveltyBatch } from '@/lib/scoring/novelty';
@@ -210,7 +210,13 @@ export async function processJob(job: IngestionJob): Promise<void> {
 
     await updateJobProgress(job.id, 30, 0, chunks.length);
 
-    // 7. Batch embed all chunks (one OpenAI call)
+    // 7a. Detect language from first chunk — one cheap LLM call
+    const sourceLanguage = await detectLanguage(chunks[0].text);
+    if (sourceLanguage.toLowerCase() !== 'english') {
+      console.log(`[Job ${job.id}] Non-English episode detected: ${sourceLanguage} — claims will be translated`);
+    }
+
+    // 7b. Batch embed all chunks (one OpenAI call)
     console.log(`[Job ${job.id}] Embedding ${chunks.length} chunks...`);
     const embeddings = await embedChunks(chunks);
 
@@ -222,7 +228,7 @@ export async function processJob(job: IngestionJob): Promise<void> {
 
     // 8. Entity extraction + conviction (GPT-4o-mini, concurrency 8)
     console.log(`[Job ${job.id}] Analyzing chunks (GPT-4o-mini, concurrency 8)...`);
-    const analyses = await analyzeChunksBatch(chunks, { concurrency: 8 });
+    const analyses = await analyzeChunksBatch(chunks, { concurrency: 8, sourceLanguage });
 
     await updateJobProgress(job.id, 60, 0, chunks.length);
 
@@ -326,7 +332,7 @@ export async function processJob(job: IngestionJob): Promise<void> {
     // ───────────────────────────────────────────────────────────────────────
 
     console.log(`[Job ${job.id}] Pass 1.5: Backfilling claims for uncovered chunks...`);
-    await preExtractEpisodeClaims(episode.id);
+    await preExtractEpisodeClaims(episode.id, sourceLanguage);
 
     // ───────────────────────────────────────────────────────────────────────
     // PASS 2: Score novelty (chunks + entity links now exist)
