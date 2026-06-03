@@ -1,8 +1,9 @@
 // Fetches recent podcast episodes for a search term via Podcast Index.
-// PI has no per-episode keyword search — instead we search for relevant feeds
-// by entityName, then pull recent episodes from each feed.
+// Strategy depends on inputType:
+//   person → search/byperson endpoint (episode-level person tagging)
+//   company/theme/product/event → search feeds by feedTerms, get recent episodes from each
 
-import { searchPodcasts, getEpisodes } from '@/lib/podcast-index/client';
+import { searchPodcasts, getEpisodes, searchEpisodesByPerson } from '@/lib/podcast-index/client';
 import type { PIEpisode } from '@/lib/podcast-index/types';
 import type { SearchExpansion } from './searchExpander';
 
@@ -10,23 +11,42 @@ export async function fetchSearchEpisodes(
   expansion: SearchExpansion,
   maxTotal = 10
 ): Promise<PIEpisode[]> {
-  // Search for podcasts whose name/description matches the entity.
-  // Using entityName (e.g. "NVIDIA", "Jensen Huang") gives much better feed
-  // recall than the specific query strings, which are too narrow for feed search.
-  const feeds = await searchPodcasts(expansion.entityName).catch(() => []);
+  if (expansion.inputType === 'person') {
+    // PI's search/byperson endpoint returns episodes tagged with the person's name —
+    // actual interviews and episodes where they appear, not just shows about them.
+    const episodes = await searchEpisodesByPerson(expansion.entityName).catch(() => []);
+    return episodes.slice(0, maxTotal);
+  }
 
+  // For company/theme/product/event: search for relevant feeds by feedTerms,
+  // then get recent episodes from each matching feed.
+  const searchTerms = expansion.feedTerms?.length
+    ? [expansion.entityName, ...expansion.feedTerms]
+    : [expansion.entityName];
+
+  const feedSearches = await Promise.allSettled(
+    searchTerms.map(q => searchPodcasts(q))
+  );
+
+  const feedMap = new Map<number, { id: number }>();
+  for (const r of feedSearches) {
+    if (r.status !== 'fulfilled') continue;
+    for (const f of r.value) {
+      if (!feedMap.has(f.id)) feedMap.set(f.id, f);
+    }
+  }
+
+  const feeds = [...feedMap.values()];
   if (feeds.length === 0) return [];
 
-  // Fetch recent episodes from the top matching feeds in parallel.
-  // Cap at 10 feeds to avoid excessive API calls; 2 episodes each = up to 20 candidates.
-  const results = await Promise.allSettled(
-    feeds.slice(0, 10).map(f => getEpisodes(f.id, 2))
+  const episodeFetches = await Promise.allSettled(
+    feeds.slice(0, 15).map(f => getEpisodes(f.id, 2))
   );
 
   const seen = new Set<number>();
   const merged: PIEpisode[] = [];
 
-  for (const r of results) {
+  for (const r of episodeFetches) {
     if (r.status !== 'fulfilled') continue;
     for (const ep of r.value) {
       if (!ep.enclosureUrl || seen.has(ep.id)) continue;

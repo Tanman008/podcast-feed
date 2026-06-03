@@ -62,8 +62,8 @@ export async function getEpisodeById(episodeId: number): Promise<PIEpisode | nul
   return data?.episode ? normalizeEpisode(data.episode) : null;
 }
 
-export async function searchEpisodes(term: string, max = 10): Promise<PIEpisode[]> {
-  const data = await piGet('search/episodesByTerm', { q: term, max });
+export async function searchEpisodesByPerson(name: string): Promise<PIEpisode[]> {
+  const data = await piGet('search/byperson', { q: name });
   return (data?.items ?? []).map(normalizeEpisode);
 }
 

@@ -19,6 +19,7 @@ interface Match {
   quality: string | null;
   createdAt: string;
   sourceFollowed: boolean;
+  interestTerm?: string;
   claim: {
     id: string;
     highlight: string;
@@ -471,8 +472,8 @@ function Sidebar({
 
 // ─── Match Card ───────────────────────────────────────────────────────────────
 
-function MatchCard({ match, showContext, quality, sameChunkAsPrev }: {
-  match: Match; showContext: boolean; quality?: string | null; sameChunkAsPrev?: boolean;
+function MatchCard({ match, showContext, quality, sameChunkAsPrev, showInterestTerm }: {
+  match: Match; showContext: boolean; quality?: string | null; sameChunkAsPrev?: boolean; showInterestTerm?: boolean;
 }) {
   const [summary, setSummary] = useState<string | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -518,15 +519,18 @@ function MatchCard({ match, showContext, quality, sameChunkAsPrev }: {
         {/* Left border — conviction-mapped amber */}
         <div className="absolute left-0 top-0 w-0.5 rounded-b-sm" style={{ height: '55%', background: borderColor }} />
 
-        {/* Header: SOURCE / episode title  · claimType  date  ↗ */}
+        {/* Header: date · SOURCE / episode title  ↗ */}
         <div className={`flex items-center mb-2 text-[10px] ${MONO}`}>
+          {match.episode.publishedAt && (
+            <span className="text-white text-[11px] font-medium shrink-0 mr-2">{fmtDate(match.episode.publishedAt)}</span>
+          )}
           <span className="text-[#bbb] uppercase tracking-wider shrink-0 font-semibold text-[9px]">
             {match.episode.source?.name ?? 'Unknown'}
           </span>
           <span className="text-[#2a2a2a] mx-1.5 shrink-0">/</span>
           <span className="text-[#777] truncate flex-1 min-w-0">{match.episode.title}</span>
-          {match.episode.publishedAt && (
-            <span className="text-[#444] ml-2 shrink-0 text-[9px]">{fmtDate(match.episode.publishedAt)}</span>
+          {showInterestTerm && match.interestTerm && (
+            <span className="ml-2 shrink-0 text-[9px] text-[#C8900A]/60 uppercase tracking-widest">{match.interestTerm}</span>
           )}
           <a href={ytUrl} target="_blank" rel="noopener noreferrer"
             className="text-[#555] hover:text-white ml-2 shrink-0 transition-colors" title="Open in YouTube">↗</a>
@@ -809,7 +813,7 @@ function CombinedView({ allMatches, filters, buckets }: { allMatches: Match[]; f
     <div>
       {sorted.length === 0 ? <EmptyState /> : sorted.map((m, i) => (
         <MatchCard key={m.id} match={m} showContext={filters.showContext} quality={m.quality}
-          sameChunkAsPrev={i > 0 && m.chunk.id === sorted[i - 1].chunk.id} />
+          sameChunkAsPrev={i > 0 && m.chunk.id === sorted[i - 1].chunk.id} showInterestTerm />
       ))}
     </div>
   );
@@ -850,7 +854,8 @@ export function InterestFeed() {
     await Promise.all(list.map(async interest => {
       const r = await fetch(`/api/feed/interests?interestId=${interest.id}&limit=100`);
       const d = r.ok ? await r.json().catch(() => ({})) : {};
-      setMatchesByInterest(prev => ({ ...prev, [interest.id]: d.matches ?? [] }));
+      const tagged = (d.matches ?? []).map((m: Match) => ({ ...m, interestTerm: interest.term }));
+      setMatchesByInterest(prev => ({ ...prev, [interest.id]: tagged }));
     }));
     setLoading(false);
   }, []);

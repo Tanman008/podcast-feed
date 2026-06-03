@@ -10,32 +10,34 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY ?? 'missing' });
 
 export interface SearchExpansion {
   inputType: 'company' | 'person' | 'theme' | 'product' | 'event';
-  entityName: string;  // Normalized display name (e.g. "Badger Meter" not "BDGI")
-  queries: string[];   // 3–4 targeted search queries for Podcast Index
+  entityName: string;      // Normalized display name (e.g. "Badger Meter" not "BDGI")
+  queries: string[];       // 3–4 detailed queries for matching episode content
+  feedTerms?: string[];    // 2–4 short terms (1–3 words) for Podcast Index feed name search
 }
 
-const PROMPT = `You are a financial podcast search assistant. Given a user's search input, classify it and generate targeted search queries for finding relevant podcast episodes on Podcast Index.
+const PROMPT = `You are a financial podcast search assistant. Given a user's search input, return JSON with two types of search terms:
 
-Input types and query strategies:
-- company: Focus on earnings, revenue, guidance, competitive position, market share
-  Example input: "NVIDIA" → queries: ["NVIDIA earnings revenue guidance", "NVIDIA datacenter GPU demand", "Blackwell H100 competitive moat", "CUDA AI infrastructure pricing"]
-- person: Focus on interviews, keynotes, predictions, track record
-  Example input: "Jensen Huang" → queries: ["Jensen Huang interview", "Jensen Huang NVIDIA strategy", "Jensen Huang AI keynote"]
-- theme: Focus on market dynamics, investment thesis, sector trends
-  Example input: "AI infrastructure" → queries: ["AI infrastructure CapEx spending", "GPU data center hyperscaler", "AI training inference supply chain", "AI infrastructure investment thesis"]
-- product: Focus on adoption, pricing, competition, roadmap
-  Example input: "Cursor AI" → entityName: "Cursor" → queries: ["Cursor AI coding assistant", "AI coding tools developer adoption", "Cursor versus GitHub Copilot"]
-- event: Focus on coverage, analysis, implications
-  Example input: "WWDC 2025" → queries: ["WWDC 2025 Apple announcements", "Apple developer conference AI features"]
+1. "queries": 3-4 detailed investment-relevant phrases describing what episodes should discuss
+2. "feedTerms": 2-4 SHORT terms (1-3 words) that match PODCAST NAMES on Podcast Index — think show names, not episode topics
+
+feedTerms strategy by type:
+- company: the company name, sector, and category
+  "NVIDIA" → feedTerms: ["NVIDIA", "semiconductor", "AI technology"]
+- person: their company/org, their domain, and a broad format
+  "Satya Nadella" → feedTerms: ["Microsoft", "technology", "business interview"]
+  "Jensen Huang" → feedTerms: ["NVIDIA", "semiconductor", "AI"]
+- theme: the core 1-2 word theme
+  "AI infrastructure" → feedTerms: ["AI", "technology", "venture capital"]
+- product: product name and category
+  "Cursor AI" → feedTerms: ["Cursor", "developer tools", "AI coding"]
 
 Return ONLY valid JSON — no markdown, no explanation:
 {
   "inputType": "company|person|theme|product|event",
   "entityName": "normalized display name",
-  "queries": ["query 1", "query 2", "query 3", "query 4"]
-}
-
-Generate exactly 3–4 queries. Queries should be 3–6 words each, specific and investment-relevant.`;
+  "queries": ["detailed query 1", "detailed query 2", "detailed query 3"],
+  "feedTerms": ["short term 1", "short term 2", "short term 3"]
+}`;
 
 export async function expandSearchTerm(input: string): Promise<SearchExpansion> {
   const trimmed = input.trim();
@@ -74,18 +76,18 @@ export async function expandSearchTerm(input: string): Promise<SearchExpansion> 
 
     return {
       inputType: parsed.inputType ?? 'company',
-      // Prefer the resolved company name over whatever the LLM returned for the entityName
       entityName: tickerMatch ?? parsed.entityName,
       queries: parsed.queries.slice(0, 4),
+      feedTerms: Array.isArray(parsed.feedTerms) ? parsed.feedTerms.slice(0, 4) : [],
     };
   } catch (err) {
     console.warn('[searchExpander] LLM failed, using fallback:', err);
-    // If ticker resolved, still use the company name for the fallback query
     const fallbackName = tickerMatch ?? trimmed;
     return {
       inputType: 'company',
       entityName: fallbackName,
       queries: [fallbackName],
+      feedTerms: [fallbackName],
     };
   }
 }

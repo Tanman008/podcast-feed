@@ -88,14 +88,6 @@ export default async function EpisodesPage() {
               </div>
 
               <div className="flex items-center gap-3 shrink-0">
-                <a
-                  href={`https://youtu.be/${ep.externalId}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[11px] text-[#555] hover:text-[#C8900A] transition-colors"
-                >
-                  ↗ YouTube
-                </a>
                 <DeleteEpisodeButton episodeId={ep.id} />
               </div>
             </div>
