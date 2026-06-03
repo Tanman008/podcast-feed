@@ -3,14 +3,11 @@
 // Speaker attribution is now handled by Deepgram diarization — speakerGuess removed.
 // Concurrency: 8 via p-limit (respects rate limits).
 
-import OpenAI from 'openai';
 import pLimit from 'p-limit';
-import { withRetry } from '@/lib/utils/retry';
 import { OPTIMIZATION_CONFIG } from '@/lib/config/optimization';
 import { RawChunk } from './chunker';
 import { EntityType, MentionType } from '@prisma/client';
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+import { openai, openaiCall } from '@/lib/openai/client';
 
 const KNOWN_TICKERS: Record<string, string> = {
   'nvidia': 'NVDA',
@@ -70,6 +67,8 @@ export interface ExtractedClaim {
   completeness: number;
   gloss?: string | null;
   numbers: string[];
+  horizon?: string | null;      // retrospective | forward | timeless
+  speakerRole?: string | null;  // insider | investor | analyst | host | other
 }
 
 export interface EntityExtractionResult {
@@ -124,7 +123,7 @@ export async function analyzeChunk(
     // Phase 2 hook: entity cache
   }
 
-  return withRetry(async () => {
+  return openaiCall(async () => {
     const prompt = ENTITY_EXTRACTION_PROMPT.replace('{transcript}', chunk.text || chunk.cleanedText)
       + (options?.langSuffix ?? '');
 
@@ -198,12 +197,14 @@ export async function analyzeChunk(
 
 export async function detectLanguage(text: string): Promise<string> {
   try {
-    const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: `What language is this text? Reply with ONLY the language name in English (e.g. "English", "German", "Spanish", "Mandarin").\n\n"${text.slice(0, 300)}"` }],
-      max_tokens: 5,
-      temperature: 0,
-    });
+    const res = await openaiCall(() =>
+      openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: `What language is this text? Reply with ONLY the language name in English (e.g. "English", "German", "Spanish", "Mandarin").\n\n"${text.slice(0, 300)}"` }],
+        max_tokens: 5,
+        temperature: 0,
+      })
+    );
     return res.choices[0]?.message?.content?.trim() ?? 'English';
   } catch {
     return 'English';

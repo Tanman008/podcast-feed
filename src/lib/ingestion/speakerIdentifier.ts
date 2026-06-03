@@ -1,22 +1,30 @@
 // lib/ingestion/speakerIdentifier.ts
-// Uses GPT-4o-mini to identify speaker names from transcript context.
-// Samples the first 10 utterances per speaker and looks for name cues:
-// self-introductions, direct address, topic expertise, etc.
+// Uses GPT-4o to identify speaker names from diarized transcript context.
+// Samples the first 25 + last 10 utterances per speaker and looks for name cues:
+// self-introductions, direct address, topic expertise, episode title, etc.
 // Returns a map of diarization label → resolved name (only populated entries).
+//
+// Fixes applied:
+//   1a. withRetry wrapping — transient 429/5xx no longer silently yields {}
+//   1b. brace-depth JSON extraction — gpt-4o trailing commentary no longer breaks parse
+//   1c. key normalization — "Speaker 0" / "0 " / "speaker_1" all map to bare label
+//   1d. duplicate-name dedup — one name on >1 label keeps only the most-evidenced label
+//   1e. junk-name filter — "Host", "Guest", "Unknown", etc. are dropped
 
-import OpenAI from 'openai';
 import { TranscribedSegment } from './transcriber';
+import { extractFirstJsonObject } from '@/lib/utils/json';
+import { openai, openaiCall } from '@/lib/openai/client';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Generic names the model uses when it has no signal — not useful as speaker names.
+const JUNK_NAME_RE = /^(host|guest|unknown|speaker|narrator|interviewer|the\s+host|the\s+guest|n\/a|none|person|man|woman|male|female)$/i;
 
 export async function identifySpeakers(
   segments: TranscribedSegment[],
   context?: { episodeTitle?: string; sourceName?: string }
 ): Promise<Record<string, string>> {
-  // Collect first 25 + last 10 utterances per speaker, ignoring segments without a label.
-  // The host (Speaker 0) rarely introduces themselves up front but may at the end.
+  // Collect first 25 + last 10 utterances per speaker label.
   const fromStart: Record<string, string[]> = {};
-  const fromEnd: Record<string, string[]> = {};
+  const fromEnd:   Record<string, string[]> = {};
 
   for (const seg of segments) {
     const label = seg.speakerLabel;
@@ -37,13 +45,13 @@ export async function identifySpeakers(
 
   const speakerBlock = labels.map(label => {
     const start = fromStart[label] ?? [];
-    const end = (fromEnd[label] ?? []).filter(t => !start.includes(t));
-    const all = [...start, ...(end.length ? ['…', ...end] : [])];
+    const end   = (fromEnd[label] ?? []).filter(t => !start.includes(t));
+    const all   = [...start, ...(end.length ? ['…', ...end] : [])];
     return `Speaker ${label}:\n${all.map(t => `- "${t}"`).join('\n')}`;
   }).join('\n\n');
 
   const contextLine = [
-    context?.sourceName && `Podcast: ${context.sourceName}`,
+    context?.sourceName   && `Podcast: ${context.sourceName}`,
     context?.episodeTitle && `Episode title: "${context.episodeTitle}"`,
   ].filter(Boolean).join('\n');
 
@@ -61,26 +69,56 @@ For each speaker below, identify their full name using any available cues.
 ${speakerBlock}
 
 Return ONLY a JSON object mapping each speaker label string to their full name (or null if genuinely unknown).
+Use the bare numeric label as the key — NOT "Speaker 0", just "0".
 Example: {"0": "Jason Calacanis", "1": "Chamath Palihapitiya", "2": "David Sacks", "3": null}`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4o',
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 500,
-      temperature: 0,
-    });
+    const response = await openaiCall(() =>
+      openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 500,
+        temperature: 0,
+      })
+    );
 
-    const text = (response.choices[0]?.message?.content ?? '{}').trim()
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```$/, '');
+    const rawText = response.choices[0]?.message?.content ?? '{}';
 
-    const parsed = JSON.parse(text) as Record<string, string | null>;
+    // 1b: brace-depth extraction handles trailing commentary from gpt-4o
+    const jsonText = extractFirstJsonObject(rawText) ?? '{}';
+    const parsed = JSON.parse(jsonText) as Record<string, string | null>;
 
-    return Object.fromEntries(
-      Object.entries(parsed).filter(([, v]) => typeof v === 'string' && v.trim().length > 0)
-    ) as Record<string, string>;
-  } catch {
+    // 1c: normalize keys — "Speaker 0", "speaker_1", "0 ", etc. → bare label
+    const validLabels = new Set(labels);
+    const normalized: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v !== 'string' || !v.trim()) continue;
+      // 1e: reject generic/junk names
+      if (JUNK_NAME_RE.test(v.trim())) continue;
+      const label = k.toLowerCase().replace(/^speaker[\s_]*/i, '').trim();
+      if (validLabels.has(label)) normalized[label] = v.trim();
+    }
+
+    // 1d: if the same name is assigned to multiple labels, keep only the label
+    // with the most utterances (strongest evidence) and drop the rest.
+    const byName = new Map<string, string[]>();
+    for (const [label, name] of Object.entries(normalized)) {
+      const existing = byName.get(name) ?? [];
+      existing.push(label);
+      byName.set(name, existing);
+    }
+    for (const [name, labs] of byName) {
+      if (labs.length <= 1) continue;
+      const keep = labs.sort(
+        (a, b) => (fromStart[b]?.length ?? 0) - (fromStart[a]?.length ?? 0)
+      )[0];
+      for (const l of labs) if (l !== keep) delete normalized[l];
+      console.warn(`[identifySpeakers] duplicate name "${name}" on labels [${labs.join(', ')}] — kept label ${keep}`);
+    }
+
+    return normalized;
+  } catch (err: any) {
+    console.error('[identifySpeakers] failed after retries:', err?.message);
     return {};
   }
 }

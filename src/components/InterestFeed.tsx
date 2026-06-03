@@ -483,7 +483,11 @@ function MatchCard({ match, showContext, quality, sameChunkAsPrev, showInterestT
 
   const speaker = match.chunk.speakerName ?? (match.chunk.speakerLabel !== null ? `Speaker ${match.chunk.speakerLabel}` : null);
   const SPEAKER = speaker?.toUpperCase() ?? null;
-  const ytUrl = `https://youtu.be/${match.episode.externalId}?t=${Math.floor(match.chunk.startTimeSeconds)}`;
+  // Only YouTube episodes have a valid youtu.be deep-link; podcast/search episodes use a PI numeric id.
+  const isYouTube = match.episode.source?.platform === 'youtube';
+  const ytUrl = isYouTube
+    ? `https://youtu.be/${match.episode.externalId}?t=${Math.floor(match.chunk.startTimeSeconds)}`
+    : null;
 
   async function handleSummary() {
     if (summaryLoading) return;
@@ -567,8 +571,10 @@ function MatchCard({ match, showContext, quality, sameChunkAsPrev, showInterestT
           {showInterestTerm && match.interestTerm && (
             <span className="ml-2 shrink-0 text-[9px] text-[#C8900A]/60 uppercase tracking-widest">{match.interestTerm}</span>
           )}
-          <a href={ytUrl} target="_blank" rel="noopener noreferrer"
-            className="text-[#555] hover:text-white ml-2 shrink-0 transition-colors" title="Open in YouTube">↗</a>
+          {ytUrl && (
+            <a href={ytUrl} target="_blank" rel="noopener noreferrer"
+              className="text-[#555] hover:text-white ml-2 shrink-0 transition-colors" title="Open in YouTube">↗</a>
+          )}
         </div>
 
         {/* Key quote — with optional inline context sentences */}
@@ -615,10 +621,18 @@ function MatchCard({ match, showContext, quality, sameChunkAsPrev, showInterestT
 
         {/* Footer */}
         <div className="flex items-center gap-1 mt-2">
-          <a href={ytUrl} target="_blank" rel="noopener noreferrer"
-            className={`flex items-center gap-1 bg-[#161616] border border-[#222] hover:border-[#333] rounded px-2 py-0.5 text-[10px] text-[#aaa] hover:text-white transition-colors ${MONO}`}>
-            ▶ {fmt(match.chunk.startTimeSeconds)}
-          </a>
+          {ytUrl ? (
+            <a href={ytUrl} target="_blank" rel="noopener noreferrer"
+              className={`flex items-center gap-1 bg-[#161616] border border-[#222] hover:border-[#333] rounded px-2 py-0.5 text-[10px] text-[#aaa] hover:text-white transition-colors ${MONO}`}>
+              ▶ {fmt(match.chunk.startTimeSeconds)}
+            </a>
+          ) : (
+            <button
+              onClick={() => setTranscriptOpen(true)}
+              className={`flex items-center gap-1 bg-[#161616] border border-[#222] hover:border-[#333] rounded px-2 py-0.5 text-[10px] text-[#aaa] hover:text-white transition-colors ${MONO}`}>
+              ▶ {fmt(match.chunk.startTimeSeconds)}
+            </button>
+          )}
           <div className="flex-1" />
           <button onClick={() => setTranscriptOpen(true)} className={btn} title="Full transcript">≡</button>
           <button

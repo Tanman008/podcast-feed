@@ -35,6 +35,7 @@ export async function GET(req: NextRequest) {
           select: {
             id: true, highlight: true, context: true, primarySubject: true, mentionedEntities: true,
             claimType: true, specificity: true, completeness: true, gloss: true, numbers: true,
+            horizon: true, speakerRole: true,
           },
         },
       },
@@ -65,6 +66,8 @@ export async function GET(req: NextRequest) {
           completeness: claim.completeness,
           gloss: claim.gloss ?? null,
           numbers: claim.numbers,
+          horizon: claim.horizon ?? null,
+          speakerRole: claim.speakerRole ?? null,
         },
         episode: {
           id: m.episode.id,

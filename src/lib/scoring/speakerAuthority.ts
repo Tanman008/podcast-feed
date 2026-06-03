@@ -3,10 +3,8 @@
 // Results are cached in Speaker.metadataJson so each name is assessed only once.
 // Returns 0–1: CEO/founder ≈ 0.9, fund manager ≈ 0.8, analyst ≈ 0.65, host ≈ 0.45, unknown ≈ 0.5
 
-import OpenAI from 'openai';
 import { db } from '@/lib/db';
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+import { openai, openaiCall } from '@/lib/openai/client';
 
 interface AuthorityCache {
   authorityScore: number;
@@ -58,7 +56,7 @@ export async function getOrAssessSpeakerAuthority(name: string): Promise<number>
 
 async function assessAuthority(name: string): Promise<number> {
   try {
-    const response = await openai.chat.completions.create({
+    const response = await openaiCall(() => openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         {
@@ -86,7 +84,7 @@ Return only the JSON.`,
       ],
       max_tokens: 100,
       temperature: 0,
-    });
+    }));
 
     const text = (response.choices[0]?.message?.content ?? '{}').trim()
       .replace(/^```(?:json)?\s*/i, '')

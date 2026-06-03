@@ -17,7 +17,7 @@ async function piGet(path: string, params: Record<string, string> = {}) {
 
 async function main() {
   // Test known filter params on byperson
-  const tests = [
+  const tests: { label: string; params: Record<string, string> }[] = [
     { label: 'no filter', params: { q: 'Satya Nadella' } },
     { label: 'notAIGenerated=1', params: { q: 'Satya Nadella', notAIGenerated: '1' } },
     { label: 'clean=1', params: { q: 'Satya Nadella', clean: '1' } },

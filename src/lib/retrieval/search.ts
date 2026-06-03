@@ -2,10 +2,8 @@
 // Ticker feed retrieval — vector search + full-text re-ranking within entity-filtered chunks.
 // Same pipeline as the interest matching engine; embedding a ticker name costs ~$0 per request.
 
-import OpenAI from 'openai';
 import { db } from '@/lib/db';
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY ?? 'missing' });
+import { openai, openaiCall } from '@/lib/openai/client';
 
 const TICKER_ALIASES: Record<string, string> = {
   'GOOG': 'GOOGL',
@@ -30,11 +28,11 @@ async function findEntityIds(ticker: string): Promise<string[]> {
 }
 
 async function embedQuery(text: string): Promise<number[]> {
-  const res = await openai.embeddings.create({
+  const res = await openaiCall(() => openai.embeddings.create({
     model: 'text-embedding-3-small',
     input: text,
     dimensions: 1536,
-  });
+  }));
   return res.data[0].embedding;
 }
 

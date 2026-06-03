@@ -83,7 +83,7 @@ export default async function EpisodesPage() {
                   <span>·</span>
                   <span>{ep.entities.length} entities</span>
                   <span>·</span>
-                  <span>{new Date(ep.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                  <span>{new Date(ep.publishedAt ?? ep.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
                 </div>
               </div>
 

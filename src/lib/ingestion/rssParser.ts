@@ -43,6 +43,32 @@ function extractGuid(item: any): string {
   return String(g).trim();
 }
 
+export interface RSSFeedMeta {
+  title:    string;
+  imageUrl: string | null;
+  feedUrl:  string;
+}
+
+export async function fetchRSSFeedMeta(feedUrl: string): Promise<RSSFeedMeta> {
+  const res = await fetch(feedUrl, {
+    headers: { 'User-Agent': 'PodcastFeedApp/1.0 (RSS Monitor)' },
+  });
+  if (!res.ok) throw new Error(`RSS fetch failed: HTTP ${res.status} for ${feedUrl}`);
+
+  const xml  = await res.text();
+  const data = parser.parse(xml);
+  const channel = data?.rss?.channel ?? {};
+
+  const title    = (channel.title ?? '').toString().trim() || 'Untitled Podcast';
+  const imageUrl =
+    channel['itunes:image']?.['@_href'] ??
+    channel['itunes:image'] ??
+    channel.image?.url ??
+    null;
+
+  return { title, imageUrl: typeof imageUrl === 'string' ? imageUrl : null, feedUrl };
+}
+
 export async function fetchRSSEpisodes(feedUrl: string): Promise<RSSEpisode[]> {
   const res = await fetch(feedUrl, {
     headers: { 'User-Agent': 'PodcastFeedApp/1.0 (RSS Monitor)' },

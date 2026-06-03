@@ -4,7 +4,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import OpenAI from 'openai';
+import { openai, openaiCall } from '@/lib/openai/client';
 
 export async function POST(
   _req: NextRequest,
@@ -61,13 +61,12 @@ Speaker: ${speaker}
 
 Return only the gloss sentence, or the word null.`;
 
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const response = await openai.chat.completions.create({
+  const response = await openaiCall(() => openai.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [{ role: 'user', content: prompt }],
     max_tokens: 60,
     temperature: 0.3,
-  });
+  }));
 
   const raw = response.choices[0]?.message?.content?.trim() ?? '';
   const gloss = (!raw || raw.toLowerCase() === 'null') ? '' : raw;

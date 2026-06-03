@@ -3,14 +3,9 @@
 // All chunks from one episode in a single API call (array input)
 // Supports provider abstraction for Phase 2 (Ollama, Voyage, etc.)
 
-import OpenAI from 'openai';
-import { withRetry } from '@/lib/utils/retry';
 import { OPTIMIZATION_CONFIG } from '@/lib/config/optimization';
 import { RawChunk } from './chunker';
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+import { openai, openaiCall } from '@/lib/openai/client';
 
 export interface EmbeddingResult {
   chunkIndex: number;
@@ -48,7 +43,7 @@ async function embedChunksOpenAI(chunks: RawChunk[]): Promise<number[][]> {
     return [];
   }
 
-  return withRetry(async () => {
+  return openaiCall(async () => {
     const response = await openai.embeddings.create({
       model: 'text-embedding-3-small',
       input: chunks.map(c => c.cleanedText),

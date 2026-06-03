@@ -16,9 +16,15 @@ async function upsertSearchSource(entityName: string, query: string): Promise<{ 
 
   const existing = await db.source.findFirst({
     where: { url: canonicalUrl },
-    select: { id: true, name: true },
+    select: { id: true, name: true, following: true },
   });
-  if (existing) return existing;
+  if (existing) {
+    // Re-activate if previously unfollowed, and refresh the query in case it changed.
+    if (!existing.following) {
+      await db.source.update({ where: { id: existing.id }, data: { following: true, searchQuery: query } });
+    }
+    return { id: existing.id, name: existing.name };
+  }
 
   const baseSlug = `${slugify(entityName)}-search`;
   let slug = baseSlug;

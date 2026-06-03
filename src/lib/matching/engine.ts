@@ -6,16 +6,13 @@
 //   4. Score: chunkCombinedScore × claimTypeWeight × entityRelationshipWeight
 //   5. Cap per episode, rank, persist to InterestMatch
 
-import OpenAI from 'openai';
 import pLimit from 'p-limit';
 import { db } from '@/lib/db';
 import { parseTerm } from './parser';
 import { lookupTicker } from '@/lib/tickers/lookup';
-import { withRetry } from '@/lib/utils/retry';
 import { TOPIC_EXPANSIONS } from './topicExpansions';
 import type { ExtractedClaim } from '@/lib/ingestion/entityExtractor';
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY ?? 'missing' });
+import { openai, openaiCall } from '@/lib/openai/client';
 
 const VECTOR_CANDIDATES = 200;
 const MAX_CLAIMS_PER_EPISODE = 20;
@@ -60,6 +57,90 @@ const CLAIM_TYPE_MULTIPLIERS: Record<string, number> = {
   thesis:         0.8,
 };
 
+const VALID_CLAIM_TYPES = new Set(Object.keys(CLAIM_TYPE_MULTIPLIERS));
+
+// The LLM occasionally invents off-enum type names (e.g. "market insight", "cost_structure").
+// Map the common strays onto the canonical eight so they score correctly instead of
+// silently falling back to the 1.0 default multiplier.
+const CLAIM_TYPE_ALIASES: Record<string, string> = {
+  'market insight':  'thesis',
+  market_insight:    'thesis',
+  insight:           'thesis',
+  opinion:           'thesis',
+  business_model:    'competitive',
+  cost_structure:    'unit_economics',
+  cost_efficiency:   'unit_economics',
+  cost_management:   'unit_economics',
+  margin:            'unit_economics',
+  risk:              'position',
+  outlook:           'guidance',
+  forecast:          'guidance',
+};
+
+export function normalizeClaimType(raw: string): string {
+  const t = (raw ?? '').trim().toLowerCase();
+  if (VALID_CLAIM_TYPES.has(t)) return t;
+  return CLAIM_TYPE_ALIASES[t] ?? 'position';
+}
+
+// ─── Horizon (temporal orientation) ─────────────────────────────────────────────
+// The product's thesis: a number that was already announced is low-value (it's on the
+// tape); a forward projection or structural thesis is high-value. `horizon` captures this.
+//
+// heuristicHorizon works on highlight text alone, so it scores the 600+ existing claims
+// (extracted before the horizon field existed) without re-running the LLM.
+
+const RETRO_RE = /\b(reported|posted|announced|blew\s+out|came\s+in|beat|missed|last\s+(quarter|year)|this\s+past|trailing|already\s+(did|posted|hit|reported)|q[1-4]\s+(performance|results?|earnings)|earnings\s+(again|call|report|season)|in\s+the\s+(last|past)\s+quarter|year\s+(over|on)\s+year|quarter\s+over\s+quarter|\bgrew\b|did\s+\$?[\d])\b/i;
+
+const FORWARD_RE = /\b(will|won'?t|would|gonna|going\s+to|expects?|expected|anticipat|projects?|projected|forecast|guid(?:e|ed|ance|ing)|outlook|estimat|next\s+(year|quarter)|by\s+20(?:2[6-9]|3\d)|in\s+(?:a\s+)?(?:one|two|three|four|five|ten|\d+)\s+years?|the\s+year\s+after|coming\s+years?|over\s+the\s+next|eventually|20(?:2[6-9]|3\d)|'2[6-9]\b|'3\d\b)\b/i;
+
+export function heuristicHorizon(highlight: string, numbers: string[]): 'retrospective' | 'forward' | 'timeless' {
+  const text = (highlight + ' ' + numbers.join(' ')).toLowerCase();
+  // Forward takes priority: a claim that pairs a past figure with a projection is valuable
+  // for its projection ("$13B today → $130B in four years").
+  if (FORWARD_RE.test(text)) return 'forward';
+  if (RETRO_RE.test(text))   return 'retrospective';
+  return 'timeless';
+}
+
+export function normalizeHorizon(raw: string | null | undefined, highlight: string, numbers: string[]): string {
+  const t = (raw ?? '').trim().toLowerCase();
+  if (t === 'retrospective' || t === 'forward' || t === 'timeless') return t;
+  return heuristicHorizon(highlight, numbers);
+}
+
+const VALID_SPEAKER_ROLES = new Set(['insider', 'investor', 'analyst', 'host', 'other']);
+
+export function normalizeSpeakerRole(raw: string | null | undefined): string | null {
+  const t = (raw ?? '').trim().toLowerCase();
+  return VALID_SPEAKER_ROLES.has(t) ? t : null;
+}
+
+// Horizon multiplier — the core lever. Forward-looking claims are what an investor can't
+// get from the tape; retrospective number-recitation (earnings already announced) is the
+// low-signal content this product exists to push down.
+function horizonMultiplier(horizon: string): number {
+  switch (horizon) {
+    case 'forward':       return 1.30;
+    case 'timeless':      return 1.05;
+    case 'retrospective': return 0.55;
+    default:              return 1.0;
+  }
+}
+
+// Speaker authority — a CEO talking about their own company outranks a host speculating.
+// Falls back to the chunk-level authorityScore when the LLM didn't label the role.
+function speakerAuthorityMultiplier(role: string | null, chunkAuthority: number | null): number {
+  switch (role) {
+    case 'insider':  return 1.25;
+    case 'investor': return 1.12;
+    case 'analyst':  return 1.02;
+    case 'host':     return 0.82;
+    case 'other':    return 0.95;
+    default:         return 0.90 + 0.20 * (chunkAuthority ?? 0.5); // ~1.0 when unknown
+  }
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface CandidateChunk {
@@ -88,7 +169,7 @@ interface ChunkMeta {
 // ─── Embed ────────────────────────────────────────────────────────────────────
 
 async function embedQuery(text: string): Promise<number[]> {
-  const res = await withRetry(() =>
+  const res = await openaiCall(() =>
     openai.embeddings.create({ model: 'text-embedding-3-small', input: text, dimensions: 1536 })
   );
   return res.data[0].embedding;
@@ -173,7 +254,7 @@ ${nextSentences ? `\nFollowing context:\n${nextSentences}` : ''}
 Return the complete verbatim highlight only. If the current highlight is already complete, return it unchanged.`;
 
   try {
-    const res = await withRetry(() =>
+    const res = await openaiCall(() =>
       openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: prompt }],
@@ -204,6 +285,13 @@ async function extractAllClaims(
 
   const prompt = `You are extracting investor-relevant claims from a financial podcast transcript.
 ${contextLine}${langLine}
+WHY THIS EXISTS — read first. The user is a professional investor who already has Bloomberg for
+reported facts. This feed must surface what Bloomberg does NOT give them: forward-looking views,
+insider strategic reasoning, and non-obvious analysis. A number that was already announced in an
+earnings release is LOW value — it is public and priced in. A prediction, a margin/growth
+trajectory, a strategic bet, a competitive-dynamics argument, or an off-consensus thesis is HIGH
+value. Favor claims that would change how an investor thinks, not claims that merely restate the tape.
+
 There are TWO distinct tracks. Extract both:
 
 ── SIGNAL CLAIMS (claimType: unit_economics | transaction | growth | guidance | valuation) ──
@@ -242,13 +330,39 @@ For each claim:
   "primarySubject": "entity this claim is ABOUT",
   "mentionedEntities": ["other entities referenced"],
   "claimType": "unit_economics|transaction|growth|thesis|position|competitive|valuation|guidance",
+  "horizon": "retrospective | forward | timeless",
+  "speakerRole": "insider | investor | analyst | host | other",
   "specificity": 0.0-1.0,
   "completeness": 0.4-1.0,
   "gloss": null,
   "numbers": ["every specific quantified fact verbatim: dollar amounts, percentages, multiples, counts, dates — empty array if none"]
 }
 
-Return claims:[] ONLY for: pure filler, host introductions, ad reads, or chunks with zero substantive content.
+claimType MUST be EXACTLY one of the eight listed values — never invent another type name.
+
+"horizon" — the temporal orientation, central to ranking:
+  "retrospective" = reports an already-public or past result (last quarter's reported revenue, an
+                    announced earnings figure, a historical fact). LOWEST investor value.
+  "forward"       = a prediction, projection, guidance, or claim about what WILL happen.
+  "timeless"      = a structural or strategic thesis not tied to a specific past/future date
+                    (how a market works, a competitive dynamic, a moat, an industry structure).
+
+"speakerRole" — infer from the episode/speaker context above:
+  "insider"  = an executive, founder, or employee of the company the claim is ABOUT (highest authority).
+  "investor" = a VC, fund manager, or someone with capital at stake.
+  "analyst"  = a domain expert or pundit analyzing from the outside.
+  "host"     = the podcast host making conversational filler/transitions.
+  "other"    = anyone else, or unknown.
+
+REJECT — return NOTHING for fragments and stubs that an investor could not act on. A claim must
+pair a subject with an assertion of real investable substance. Do not emit claims like:
+  "Customers like the product." / "The demand has been overwhelming." (vague sentiment, no magnitude)
+  "The CapEx is still the dominant cost." (trivially true, no magnitude or direction)
+  any single short clause with no number, no named entity, and no falsifiable assertion.
+Keep a claim only if losing it would cost an investor real information.
+
+Return claims:[] for: pure filler, host introductions, ad reads, unactionable sentiment fragments,
+or chunks with zero substantive content.
 
 Return ONLY valid JSON:
 {"chunkType":"ARGUMENT|POSITION|DATA|THESIS|OPINION|CHITCHAT","claims":[...]}
@@ -259,7 +373,7 @@ ${chunkText}
 """`;
 
   try {
-    const response = await withRetry(() =>
+    const response = await openaiCall(() =>
       openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: prompt }],
@@ -268,8 +382,24 @@ ${chunkText}
       })
     );
 
-    const raw = response.choices[0]?.message?.content?.trim();
-    if (!raw) return [];
+    const rawContent = response.choices[0]?.message?.content?.trim();
+    if (!rawContent) return [];
+
+    // gpt-4o-mini sometimes appends trailing text after the closing brace, or wraps the
+    // response in markdown fences. Extract the first complete top-level JSON object.
+    let raw = rawContent;
+    // Strip leading markdown fence if present
+    raw = raw.replace(/^```(?:json)?\s*/i, '');
+    // Find the outermost { ... } by tracking brace depth — handles trailing commentary
+    const start = raw.indexOf('{');
+    if (start === -1) return [];
+    let depth = 0;
+    let end = -1;
+    for (let i = start; i < raw.length; i++) {
+      if (raw[i] === '{') depth++;
+      else if (raw[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+    }
+    raw = end !== -1 ? raw.slice(start, end + 1) : raw.slice(start);
 
     const parsed = JSON.parse(raw) as { chunkType: string; claims: ExtractedClaim[] };
     const valid = (parsed.claims ?? []).filter(
@@ -346,7 +476,9 @@ ${chunkText}
           endSentenceIndex: c.endSentenceIndex ?? 0,
           primarySubject: c.primarySubject ?? null,
           mentionedEntities: c.mentionedEntities ?? [],
-          claimType: c.claimType,
+          claimType: normalizeClaimType(c.claimType),
+          horizon: normalizeHorizon(c.horizon, c.highlight, c.numbers ?? []),
+          speakerRole: normalizeSpeakerRole(c.speakerRole),
           specificity: c.specificity ?? 0.5,
           completeness: c.completeness,
           gloss: (!c.gloss || c.gloss.toLowerCase() === 'null') ? null : c.gloss,
@@ -568,6 +700,10 @@ export async function matchInterestAgainstEpisodes(
   // claims that name "Microsoft" rather than the ticker symbol.
   const expandedTokens = [...parsed.tokens];
   let expandedEmbedText = parsed.embeddingText;
+  // Interest type drives the scoring profile: a company feed cares about financial
+  // materiality; a topic feed cares about milestones, novelty, and forward views.
+  let isCompanyInterest = false;
+  let isTopicInterest = false;
   for (const token of parsed.tokens) {
     const companyName = lookupTicker(token.trim());
     if (companyName) {
@@ -575,8 +711,11 @@ export async function matchInterestAgainstEpisodes(
       if (!expandedTokens.includes(companyName)) expandedTokens.push(companyName);
       if (!expandedTokens.includes(firstName)) expandedTokens.push(firstName);
       expandedEmbedText = companyName;
+      isCompanyInterest = true;
     }
   }
+  // A named company without a ticker (e.g. "OpenAI") still counts as a company interest.
+  if (!isCompanyInterest && getSubsidiaries(expandedTokens).length > 0) isCompanyInterest = true;
 
   // Expand topic/theme terms: "Quantum" → ["quantum computing", "qubit", "majorana", ...]
   // so entity matching fires on claims that discuss the topic even without naming it explicitly.
@@ -589,6 +728,7 @@ export async function matchInterestAgainstEpisodes(
         }
         // Use first expansion as embedding text (more canonical than bare keyword)
         expandedEmbedText = subs[0];
+        if (!isCompanyInterest) isTopicInterest = true;
         break;
       }
     }
@@ -630,6 +770,7 @@ export async function matchInterestAgainstEpisodes(
       id: true, chunkId: true, highlight: true, primarySubject: true,
       mentionedEntities: true, claimType: true, specificity: true,
       completeness: true, gloss: true, numbers: true,
+      horizon: true, speakerRole: true,
     },
   });
   // Build highlight lookup for dedup pass below
@@ -645,8 +786,20 @@ export async function matchInterestAgainstEpisodes(
       claimQuality: number; novelty: number; forwardLooking: number;
       numericInfo: number; specificity: number;
       claimTypeMultiplier: number; platitudePenalty: number;
+      horizon: string; horizonMult: number; authorityMult: number;
     };
   }
+
+  // Component weights differ by interest type. A company feed weights financial
+  // materiality; a topic feed weights novelty/forward views over dollar figures.
+  const W = isTopicInterest
+    ? { interest: 0.20, mat: 0.10, eco: 0.12, qual: 0.14, nov: 0.16, fwd: 0.16, num: 0.10, spec: 0.02 }
+    : { interest: 0.18, mat: 0.16, eco: 0.15, qual: 0.12, nov: 0.13, fwd: 0.14, num: 0.10, spec: 0.02 };
+
+  // Below this entity relevance, the claim is only semantically adjacent (the company/topic
+  // isn't named or economically exposed). Drop it — a company feed should be that company,
+  // not a general big-tech feed. (Audit friction C.)
+  const ENTITY_RELEVANCE_FLOOR = 0.18;
 
   const scoredClaims: ScoredClaim[] = [];
   for (const claim of claims) {
@@ -666,34 +819,47 @@ export async function matchInterestAgainstEpisodes(
     const economicExposure = computeEconomicExposureScore(claim, expandedTokens, materiality);
     const platitudePenalty = computePlatitudePenalty(claim.highlight);
 
-    // Entity relevance is now a weighted component (15%), not a multiplier.
-    // Materiality (22%) + economic exposure (15%) together outweigh entity alone.
-    const investmentScore =
-      0.20 * interestMatch    +
-      0.22 * materiality      +
-      0.15 * economicExposure +
-      0.12 * claimQuality     +
-      0.12 * novelty          +
-      0.10 * forwardLooking   +
-      0.07 * numericInfo      +
-      0.02 * specificity;
-
-    const claimTypeMultiplier = CLAIM_TYPE_MULTIPLIERS[claim.claimType] ?? 1.0;
-    // relevanceGate: interestMatch must be meaningful — a great signal about the wrong topic scores near zero
-    const relevanceGate = Math.pow(interestMatch, 1.5);
-    // entityGate: if neither direct entity mention nor economic exposure is present, suppress heavily.
-    // Prevents high-quality claims about unrelated topics from surfacing.
-    // economicExposure handles subsidiaries (GitHub → Microsoft), so this doesn't break those cases.
     const entityRelevance = Math.max(entityWeight, economicExposure);
-    // Graduated gate: entity must be central to the claim, not just semantically adjacent.
-    // - >= 0.50: entity is primary subject OR subsidiary/topic term as primary/mentioned → full score
-    // - >= 0.25: entity appears in highlight text → 60% (raised from 0.30 to catch borderline topic matches)
-    // - < 0.25: semantic-only match → suppressed to near zero
-    const entityGate = entityRelevance >= 0.50 ? 1.0 : entityRelevance >= 0.25 ? 0.60 : 0.10;
-    const score = investmentScore * claimTypeMultiplier * (1 - platitudePenalty * 0.5) * relevanceGate * entityGate;
+    if (entityRelevance < ENTITY_RELEVANCE_FLOOR) continue; // semantic-only noise — drop entirely
+
+    const investmentScore =
+      W.interest * interestMatch    +
+      W.mat      * materiality      +
+      W.eco      * economicExposure +
+      W.qual     * claimQuality     +
+      W.nov      * novelty          +
+      W.fwd      * forwardLooking   +
+      W.num      * numericInfo      +
+      W.spec     * specificity;
+
+    // claimType normalized so off-enum strays ("market insight") get a real multiplier.
+    const claimTypeKey      = normalizeClaimType(claim.claimType);
+    const claimTypeMultiplier = CLAIM_TYPE_MULTIPLIERS[claimTypeKey] ?? 1.0;
+
+    // Horizon + speaker authority — the two levers that separate "Bloomberg already has this"
+    // from "this changes my view". Horizon uses the LLM field when present, else a heuristic
+    // so the existing corpus (null horizon) is still scored correctly.
+    const horizon        = normalizeHorizon(claim.horizon, claim.highlight, numbers);
+    const horizonMult    = horizonMultiplier(horizon);
+    const authorityMult  = speakerAuthorityMultiplier(normalizeSpeakerRole(claim.speakerRole), chunk.authorityScore);
+
+    // relevanceGate: interestMatch must be meaningful — a great signal about the wrong topic scores near zero.
+    // Exponent 1.1 (was 1.5) — vector similarity already gated candidates in; don't double-penalize.
+    const relevanceGate = Math.pow(interestMatch, 1.1);
+    // Graduated entity gate: entity must be central to the claim, not just semantically adjacent.
+    // Bottom tier raised 0.10→0.35 so the 0.18–0.25 relevance band isn't crushed to noise.
+    const entityGate = entityRelevance >= 0.50 ? 1.0 : entityRelevance >= 0.25 ? 0.60 : 0.35;
+
+    const score = investmentScore
+      * claimTypeMultiplier
+      * horizonMult
+      * authorityMult
+      * (1 - platitudePenalty * 0.5)
+      * relevanceGate
+      * entityGate;
 
     const ideaTypes = new Set(['thesis', 'competitive', 'position']);
-    const quality = ideaTypes.has(claim.claimType)
+    const quality = ideaTypes.has(claimTypeKey)
       ? 'idea'
       : (claim.completeness >= 0.5 ? 'high' : 'low');
 
@@ -703,6 +869,7 @@ export async function matchInterestAgainstEpisodes(
       breakdown: {
         interestMatch, materiality, economicExposure, claimQuality, novelty,
         forwardLooking, numericInfo, specificity, claimTypeMultiplier, platitudePenalty,
+        horizon, horizonMult, authorityMult,
       },
     });
   }
@@ -716,6 +883,7 @@ export async function matchInterestAgainstEpisodes(
       `  eco=${b.economicExposure.toFixed(2)}  mat=${b.materiality.toFixed(2)}` +
       `  num=${b.numericInfo.toFixed(2)}  fwd=${b.forwardLooking.toFixed(2)}` +
       `  nov=${b.novelty.toFixed(2)}  type=${b.claimTypeMultiplier}x` +
+      `  hor=${b.horizon.slice(0,4)}(${b.horizonMult}x)  auth=${b.authorityMult.toFixed(2)}x` +
       (b.platitudePenalty > 0 ? `  plat=-${(b.platitudePenalty * 0.5 * 100).toFixed(0)}%` : '')
     );
   }
@@ -749,11 +917,12 @@ export async function matchInterestAgainstEpisodes(
   // Keeps only the highest-scoring version when boundary expansion produces
   // multiple overlapping highlights for the same underlying quote.
   const writtenHighlightsByEpisode = new Map<string, string[]>();
-  // Per-primarySubject cap: prevents a single company/topic from dominating the feed.
-  // E.g. limit "OpenAI" claims in an MSFT feed to avoid the Microsoft-OpenAI news
-  // overwhelming direct MSFT signals.
+  // Per-primarySubject cap: prevents a secondary entity from dominating the feed.
+  // E.g. limit "OpenAI" claims in an MSFT feed, but NOT "Microsoft" claims in an MSFT feed.
   const MAX_CLAIMS_PER_SUBJECT = 3;
   const perSubjectCount: Record<string, number> = {};
+  // Returns true if this subject IS the searched entity — exempt from the cap.
+  const isSearchedSubject = (s: string) => expandedTokens.some(t => matchesToken(s, t));
 
   let written = 0;
   for (const sc of capped) {
@@ -761,10 +930,10 @@ export async function matchInterestAgainstEpisodes(
     const prior = writtenHighlightsByEpisode.get(sc.episodeId) ?? [];
     if (prior.some(h => wordOverlapRatio(h, highlight) >= 0.70)) continue;
 
-    // Subject cap: find the claim's primarySubject from the loaded claims array
+    // Subject cap: only cap secondary subjects, never the searched entity itself.
     const claimObj = claims.find(c => c.id === sc.claimId);
     const subject = (claimObj?.primarySubject ?? '').toLowerCase().trim();
-    if (subject) {
+    if (subject && !isSearchedSubject(subject)) {
       const subjectHits = perSubjectCount[subject] ?? 0;
       if (subjectHits >= MAX_CLAIMS_PER_SUBJECT) continue;
       perSubjectCount[subject] = subjectHits + 1;

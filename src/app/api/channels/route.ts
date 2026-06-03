@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
         },
       });
     } else {
-      const feed = await getPodcastById(info.feedId).catch(() => null);
+      const feed = info.feedId ? await getPodcastById(info.feedId).catch(() => null) : null;
       const baseSlug = info.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
       let slug = baseSlug;
       let attempt = 0;

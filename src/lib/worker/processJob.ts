@@ -16,7 +16,7 @@ import { checkIsDuplicate } from '@/lib/ingestion/deduplication';
 import { scoreNoveltyBatch } from '@/lib/scoring/novelty';
 import { getOrAssessSpeakerAuthority } from '@/lib/scoring/speakerAuthority';
 import { completeJob, failJob, updateJobProgress } from './claim';
-import { matchEpisodeAgainstAllInterests, preExtractEpisodeClaims } from '@/lib/matching/engine';
+import { matchEpisodeAgainstAllInterests, preExtractEpisodeClaims, normalizeClaimType, normalizeHorizon, normalizeSpeakerRole } from '@/lib/matching/engine';
 
 async function deleteEpisodeIfExists(episodeId: string): Promise<void> {
   try {
@@ -183,7 +183,16 @@ export async function processJob(job: IngestionJob): Promise<void> {
     const speakerNames = await identifySpeakers(segments, {
       episodeTitle,
       sourceName: source?.name ?? undefined,
-    }).catch(() => ({} as Record<string, string>));
+    }).catch((err: any) => {
+      console.error(`[Job ${job.id}] identifySpeakers threw:`, err?.message);
+      return {} as Record<string, string>;
+    });
+    const uniqueLabels = [...new Set(segments.map(s => s.speakerLabel).filter(Boolean))];
+    if (Object.keys(speakerNames).length === 0 && uniqueLabels.length > 0) {
+      console.warn(`[Job ${job.id}] No speaker names resolved (${uniqueLabels.length} diarization label(s) present: [${uniqueLabels.join(', ')}])`);
+    } else {
+      console.log(`[Job ${job.id}] Speakers resolved: ${JSON.stringify(speakerNames)}`);
+    }
 
     // Assess speaker authority for each unique resolved name (cached per Speaker record)
     const uniqueSpeakerNames = [...new Set(Object.values(speakerNames))];
@@ -272,20 +281,23 @@ export async function processJob(job: IngestionJob): Promise<void> {
 
       // Persist claims extracted in the combined LLM call
       for (const claim of analysis.claims) {
+        const numbers = Array.isArray(claim.numbers) ? claim.numbers.filter((n): n is string => typeof n === 'string') : [];
         await db.claim.create({
           data: {
             chunkId:            dbChunk.id,
             highlight:          claim.highlight,
-            context:            claim.context            ?? null,
+            context:            (!claim.context || claim.context.toLowerCase() === 'null') ? null : claim.context,
             startSentenceIndex: claim.startSentenceIndex ?? 0,
             endSentenceIndex:   claim.endSentenceIndex   ?? 0,
             primarySubject:     claim.primarySubject     ?? null,
             mentionedEntities:  claim.mentionedEntities  ?? [],
-            claimType:          claim.claimType,
+            claimType:          normalizeClaimType(claim.claimType),
+            horizon:            normalizeHorizon(claim.horizon, claim.highlight, numbers),
+            speakerRole:        normalizeSpeakerRole(claim.speakerRole),
             specificity:        claim.specificity,
             completeness:       claim.completeness,
-            gloss:              claim.gloss ?? null,
-            numbers:            claim.numbers ?? [],
+            gloss:              (!claim.gloss || claim.gloss.toLowerCase() === 'null') ? null : claim.gloss,
+            numbers,
           },
         });
       }
