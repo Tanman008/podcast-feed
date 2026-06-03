@@ -13,15 +13,30 @@ async function fetchPersonEpisodes(personName: string): Promise<PIEpisode[]> {
 
   const itunesEps = await searchItunesEpisodes(personName, 20).catch(() => []);
 
+  // Resolve collectionId → PI feed, then fetch PI episodes to get accurate datePublished.
+  // iTunes releaseDate can reflect today's date when Apple normalizes/updates episodes.
+  // PI pulls datePublished from RSS <pubDate> directly, which is always the original air date.
   const uniqueCollectionIds = [...new Set(itunesEps.map(e => e.collectionId))];
-  const piFeeds = await Promise.allSettled(uniqueCollectionIds.map(id => getPodcastByItunesId(id)));
+  const piLookups = await Promise.allSettled(
+    uniqueCollectionIds.map(async id => {
+      const feed = await getPodcastByItunesId(id);
+      if (!feed) return { collectionId: id, feed: null, piEps: [] };
+      const piEps = await getEpisodes(feed.id, 20).catch(() => []);
+      return { collectionId: id, feed, piEps };
+    })
+  );
+
+  // Map: enclosureUrl → PI episode (for date + duration lookup)
+  const piEpByUrl = new Map<string, PIEpisode>();
   const feedByCollectionId = new Map<number, { feedId: number; feedUrl: string; feedTitle: string }>();
-  uniqueCollectionIds.forEach((collId, i) => {
-    const r = piFeeds[i];
-    if (r.status === 'fulfilled' && r.value) {
-      feedByCollectionId.set(collId, { feedId: r.value.id, feedUrl: r.value.feedUrl, feedTitle: r.value.title });
+  for (const r of piLookups) {
+    if (r.status !== 'fulfilled' || !r.value.feed) continue;
+    const { collectionId, feed, piEps } = r.value;
+    feedByCollectionId.set(collectionId, { feedId: feed.id, feedUrl: feed.feedUrl, feedTitle: feed.title });
+    for (const ep of piEps) {
+      if (ep.enclosureUrl) piEpByUrl.set(ep.enclosureUrl, ep);
     }
-  });
+  }
 
   const seen = new Set<number>();
   const results: PIEpisode[] = [];
@@ -30,7 +45,10 @@ async function fetchPersonEpisodes(personName: string): Promise<PIEpisode[]> {
     seen.add(ep.trackId);
     if (AI_FARM_RE.test(ep.collectionName ?? '')) continue;
     if (!nameTokens.some(tok => ep.trackName.toLowerCase().includes(tok))) continue;
-    const feed = feedByCollectionId.get(ep.collectionId);
+
+    const feed   = feedByCollectionId.get(ep.collectionId);
+    const piEp   = piEpByUrl.get(ep.episodeUrl);   // match by audio URL
+
     results.push({
       id:            ep.trackId,
       guid:          String(ep.trackId),
@@ -39,8 +57,8 @@ async function fetchPersonEpisodes(personName: string): Promise<PIEpisode[]> {
       feedUrl:       feed?.feedUrl ?? '',
       title:         ep.trackName,
       description:   ep.description ?? '',
-      datePublished: Math.floor(new Date(ep.releaseDate).getTime() / 1000),
-      duration:      Math.floor((ep.trackTimeMillis ?? 0) / 1000),
+      datePublished: piEp?.datePublished ?? Math.floor(new Date(ep.releaseDate).getTime() / 1000),
+      duration:      piEp?.duration      ?? Math.floor((ep.trackTimeMillis ?? 0) / 1000),
       enclosureUrl:  ep.episodeUrl,
       image:         ep.artworkUrl600 ?? '',
     });
