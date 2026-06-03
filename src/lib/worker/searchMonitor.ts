@@ -9,7 +9,7 @@ import { fetchSearchEpisodes } from '@/lib/ingestion/searchIngestion';
 export async function checkSearchForNewEpisodes(sourceId: string): Promise<number> {
   const source = await db.source.findUnique({
     where: { id: sourceId },
-    select: { id: true, name: true, searchQuery: true, lastCheckedAt: true },
+    select: { id: true, name: true, searchQuery: true, lastCheckedAt: true, minDurationSeconds: true },
   });
   if (!source?.searchQuery) return 0;
 
@@ -45,11 +45,14 @@ export async function checkSearchForNewEpisodes(sourceId: string): Promise<numbe
   // Also skip episodes published before our last check (not a backfill run)
   const lastChecked = source.lastCheckedAt;
 
+  const minDurationSecs = source.minDurationSeconds ?? 20 * 60;
+
   let enqueued = 0;
   for (const ep of episodes) {
     const externalId = String(ep.id);
     if (existingIds.has(externalId)) continue;
     if (!ep.enclosureUrl) continue;
+    if (ep.duration && ep.duration < minDurationSecs) continue;
     if (lastChecked && ep.datePublished && new Date(ep.datePublished * 1000) <= lastChecked) continue;
 
     const episode = await db.episode.upsert({

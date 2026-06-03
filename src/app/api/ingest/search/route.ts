@@ -28,13 +28,14 @@ async function upsertSearchSource(entityName: string, query: string): Promise<{ 
     try {
       const source = await db.source.create({
         data: {
-          name:        `${entityName} (search)`,
+          name:               `${entityName} (search)`,
           slug,
-          sourceType:  'search',
-          platform:    'podcast_index',
-          url:         canonicalUrl,
-          searchQuery: query,
-          following:   true,
+          sourceType:         'search',
+          platform:           'podcast_index',
+          url:                canonicalUrl,
+          searchQuery:        query,
+          following:          true,
+          minDurationSeconds: 20 * 60,  // 20 min — filters news clips, AI summaries
         },
       });
       return { id: source.id, name: source.name };
@@ -85,11 +86,14 @@ export async function POST(req: NextRequest) {
       })).map(e => e.externalId)
     );
 
+    const MIN_DURATION_SECS = 20 * 60;
+
     let queued = 0;
     for (const ep of episodes) {
       const externalId = String(ep.id);
       if (existingIds.has(externalId)) continue;
       if (!ep.enclosureUrl) continue;
+      if (ep.duration && ep.duration < MIN_DURATION_SECS) continue;
 
       const episode = await db.episode.upsert({
         where: { sourceId_externalId: { sourceId: source.id, externalId } },
