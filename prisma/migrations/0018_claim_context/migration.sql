@@ -1,0 +1,1 @@
+ALTER TABLE "Claim" ADD COLUMN IF NOT EXISTS "context" TEXT;

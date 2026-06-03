@@ -60,6 +60,7 @@ export interface ExtractedEntity {
 
 export interface ExtractedClaim {
   highlight: string;
+  context?: string | null;
   startSentenceIndex: number;
   endSentenceIndex: number;
   primarySubject?: string;

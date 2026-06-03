@@ -227,9 +227,16 @@ VERBATIM ONLY: Every word in the highlight MUST appear verbatim in the chunk tex
 
 SELF-CONTAINED: If the highlight uses a pronoun ("this", "it", "that", "they", "these") whose referent is not explicit within the highlight itself, extend the highlight backward to include the sentence(s) that name the referent. The highlight must be interpretable in isolation — a reader with no context should know what is being claimed.
 
+ASR CLEANUP: Speech-to-text produces artifacts — fix these in the highlight only:
+- Spelled-out numbers in financial/numeric contexts: "forty five billion" → "$45B", "twenty percent" → "20%", "two hundred million dollars" → "$200M"
+- Multipliers: "four x" / "four times" → "4x", "three x" → "3x", "ten x" → "10x"
+- Fiscal quarters: "four q" / "q four" / "fourth quarter" → "Q4", "one q" → "Q1", "two q" → "Q2", "three q" → "Q3"
+- Do not change any word that isn't a clear ASR artifact.
+
 For each claim:
 {
-  "highlight": "verbatim text — 2-3 verbatim sentences for all claim types",
+  "highlight": "verbatim text with ASR artifacts fixed",
+  "context": "SPEAKER NAME IN CAPS (on brief topic, 5-8 words). Use the surrounding chunk to identify what's being discussed at this moment. Do NOT name the primarySubject entity — describe the broader conversational topic. Example: 'JENSEN (on the economics of inference scaling)'. If speaker unknown write 'SPEAKER'.",
   "startSentenceIndex": 0,
   "endSentenceIndex": 0,
   "primarySubject": "entity this claim is ABOUT",
@@ -334,6 +341,7 @@ ${chunkText}
         data: {
           chunkId,
           highlight: c.highlight,
+          context:   (!c.context || c.context.toLowerCase() === 'null') ? null : c.context,
           startSentenceIndex: c.startSentenceIndex ?? 0,
           endSentenceIndex: c.endSentenceIndex ?? 0,
           primarySubject: c.primarySubject ?? null,
@@ -374,15 +382,12 @@ function computeEntityWeight(
 ): number {
   if (claim.primarySubject && termTokens.some(t => matchesToken(claim.primarySubject!, t))) return 1.0;
   const mentioned = claim.mentionedEntities.some(e => termTokens.some(t => matchesToken(e, t)));
-  // mentionedEntities match: raised from 0.3 so it clears the 0.50 entityGate tier
-  // for transactions (0.8) and the 0.50 tier for mentions (0.55). This avoids
-  // topic claims being crushed when the entity appears in supporting context.
-  if (mentioned) return claim.claimType === 'transaction' ? 0.8 : 0.55;
-  // Highlight text match: raised from 0.2 → 0.5 so that topic/theme interests
-  // (e.g. "Quantum") can match claims where the term appears verbatim in the
-  // highlight, even when the LLM attributed the claim to a company subject.
+  // Transaction mention: entity is likely party to the deal, keep strong (0.80, clears 0.50 gate).
+  // Non-transaction mention: entity appears in context but isn't the subject — lowered from 0.55
+  // to 0.35 so it falls in the 0.25-0.50 gate tier (multiplied by 0.60 instead of 1.0).
+  // Prevents "Elon Musk mentioned once at chunk start" from ranking alongside claims actually about him.
+  if (mentioned) return claim.claimType === 'transaction' ? 0.80 : 0.35;
   if (termTokens.some(t => matchesToken(claim.highlight, t))) return 0.5;
-  // Term absent from claim text but chunk passed vector search — soft baseline.
   return 0.1;
 }
 

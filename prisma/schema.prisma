@@ -134,6 +134,7 @@ model Claim {
   specificity        Float
   completeness       Float
   gloss              String?
+  context            String?
   createdAt          DateTime        @default(now())
   numbers            String[]        @default([])
   chunk              TranscriptChunk @relation(fields: [chunkId], references: [id], onDelete: Cascade)

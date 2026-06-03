@@ -33,7 +33,7 @@ export async function GET(req: NextRequest) {
         },
         claim: {
           select: {
-            id: true, highlight: true, primarySubject: true, mentionedEntities: true,
+            id: true, highlight: true, context: true, primarySubject: true, mentionedEntities: true,
             claimType: true, specificity: true, completeness: true, gloss: true, numbers: true,
           },
         },
@@ -57,6 +57,7 @@ export async function GET(req: NextRequest) {
         claim: {
           id: claim.id,
           highlight: claim.highlight,
+          context: claim.context ?? null,
           primarySubject: claim.primarySubject ?? null,
           mentionedEntities: claim.mentionedEntities,
           claimType: claim.claimType,

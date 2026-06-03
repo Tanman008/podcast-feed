@@ -276,6 +276,7 @@ export async function processJob(job: IngestionJob): Promise<void> {
           data: {
             chunkId:            dbChunk.id,
             highlight:          claim.highlight,
+            context:            claim.context            ?? null,
             startSentenceIndex: claim.startSentenceIndex ?? 0,
             endSentenceIndex:   claim.endSentenceIndex   ?? 0,
             primarySubject:     claim.primarySubject     ?? null,

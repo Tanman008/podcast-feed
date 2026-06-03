@@ -23,6 +23,7 @@ interface Match {
   claim: {
     id: string;
     highlight: string;
+    context: string | null;
     primarySubject: string | null;
     mentionedEntities: string[];
     claimType: string;
@@ -508,6 +509,40 @@ function MatchCard({ match, showContext, quality, sameChunkAsPrev, showInterestT
     : (pct >= 80 ? '#C8900A' : pct >= 60 ? 'rgba(200,144,10,0.6)' : pct >= 40 ? 'rgba(200,144,10,0.3)' : '#2a2a2a');
   const btn = `text-[11px] text-[#aaa] hover:text-white w-6 h-6 flex items-center justify-center rounded hover:bg-[#1e1e1e] transition-colors ${MONO}`;
 
+  // Derive why this claim appeared in the feed.
+  // Two confusing cases to surface:
+  //   1. Subject match where the subject name isn't in the highlight text
+  //      e.g. primarySubject="Elon Musk" but quote is "If it got 1% better..."
+  //   2. Mention-only match — entity appeared somewhere in the chunk but isn't the subject
+  const matchReason = (() => {
+    const term        = match.interestTerm?.toLowerCase() ?? '';
+    if (!term) return null;
+    const tokens       = term.split(/\s+/).filter(w => w.length > 2);
+    const subject      = match.claim.primarySubject ?? '';
+    const subjectLower = subject.toLowerCase();
+    const highlightLow = match.claim.highlight.toLowerCase();
+
+    const isSubject = tokens.some(t =>
+      subjectLower.includes(t) || t.includes(subjectLower.split(/\s+/)[0] ?? '')
+    );
+
+    if (isSubject) {
+      // Subject match — only annotate when the subject name is absent from the highlight.
+      // If "Elon Musk" isn't in the quote, the user can't tell why it appeared.
+      const firstToken = subjectLower.split(/\s+/)[0] ?? '';
+      if (firstToken && !highlightLow.includes(firstToken)) {
+        return `attributed to ${subject}`;
+      }
+      return null;
+    }
+
+    const matchingEntity = match.claim.mentionedEntities.find(e =>
+      tokens.some(t => e.toLowerCase().includes(t))
+    );
+    if (matchingEntity) return `${matchingEntity} mentioned in transcript`;
+    return null;
+  })();
+
   return (
     <>
       {sameChunkAsPrev && (
@@ -538,12 +573,14 @@ function MatchCard({ match, showContext, quality, sameChunkAsPrev, showInterestT
 
         {/* Key quote — with optional inline context sentences */}
         <div className={`text-[14px] leading-[1.75] mb-1.5 ${MONO}`}>
-          {SPEAKER && (
+          {match.claim.context ? (
+            <span className="block text-[10px] text-[#666] mb-1 italic">{match.claim.context}</span>
+          ) : SPEAKER ? (
             <span className="mr-1.5 inline-flex items-center gap-1">
               <span className="text-[#C8900A] font-bold text-[11px] tracking-wide">{SPEAKER}</span>
               <span className="text-[#C8900A] font-bold text-[11px]">:</span>
             </span>
-          )}
+          ) : null}
           {showContext ? (() => {
             const { before, after } = extractContext(match.chunk.text, match.claim.highlight);
             return (
@@ -561,6 +598,13 @@ function MatchCard({ match, showContext, quality, sameChunkAsPrev, showInterestT
             </span>
           )}
         </div>
+
+        {/* Match reason — only shown when attribution is non-obvious */}
+        {matchReason && (
+          <div className={`text-[10px] text-[#666] italic mt-1 mb-0.5 ${MONO}`}>
+            ↳ {matchReason}
+          </div>
+        )}
 
         {/* AI Summary panel */}
         {(summaryLoading || summary) && summaryOpen && (
