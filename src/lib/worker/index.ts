@@ -3,7 +3,7 @@
 // Run with: npm run worker
 // Graceful shutdown on SIGTERM
 
-import { claimNextJob } from './claim';
+import { claimNextJob, failJob } from './claim';
 import { processJob } from './processJob';
 import { pollAllChannels } from './rssMonitor';
 import { pollAllSearches } from './searchMonitor';
@@ -11,7 +11,8 @@ import { db } from '@/lib/db';
 
 const POLL_INTERVAL_MS    = 5_000;        // job poll: every 5s
 const RSS_INTERVAL_MS     = 30 * 60_000; // RSS poll: every 30 min
-const MAX_CONCURRENT_JOBS = 1;
+const MAX_CONCURRENT_JOBS = 3;            // parallel I/O-bound jobs
+const JOB_TIMEOUT_MS      = 35 * 60_000; // 35 min — kills hung jobs, frees the slot
 
 let isRunning  = true;
 let activeJobs = 0;
@@ -32,8 +33,15 @@ async function pollAndProcess(): Promise<void> {
   activeJobs++;
   console.log(`[Worker] Processing job ${job.id} (${activeJobs}/${MAX_CONCURRENT_JOBS} active)`);
 
-  processJob(job)
-    .catch(error => console.error(`[Worker] Job ${job.id} error:`, error))
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`Job timed out after ${JOB_TIMEOUT_MS / 60000}min`)), JOB_TIMEOUT_MS)
+  );
+
+  Promise.race([processJob(job), timeout])
+    .catch(async (error) => {
+      console.error(`[Worker] Job ${job.id} error:`, error);
+      try { await failJob(job.id, error?.message ?? 'Unknown error'); } catch {}
+    })
     .finally(() => { activeJobs--; });
 }
 
